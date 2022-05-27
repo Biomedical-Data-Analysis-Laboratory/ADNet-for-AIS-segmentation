@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import os.path
 import random
 import numpy as np
+import cv2
 
 import torch.nn as nn
 import torch.nn.parallel
@@ -11,6 +13,7 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch.utils.data import DataLoader
+import torchvision.transforms as T
 
 from models.fewshot_anom import FewShotSeg
 from dataloading.datasets import TestDataset
@@ -30,12 +33,16 @@ def parse_arguments():
     parser.add_argument('--EP1', default=False, type=bool)
     parser.add_argument('--seed', default=None, type=int)
     parser.add_argument('--workers', default=0, type=int)
+    parser.add_argument('--gpu', default=0, type=int)
+    parser.add_argument('--k', default=0.5, type=float)
 
     return parser.parse_args()
 
 
 def main():
     args = parse_arguments()
+    torch.cuda.empty_cache()
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     # Deterministic setting for reproducability.
     if args.seed is not None:
@@ -51,9 +58,10 @@ def main():
     args.save = os.path.join(args.save_root)
 
     # Init model and load state_dict.
-    model = FewShotSeg(use_coco_init=False)
-    model = nn.DataParallel(model.cuda())
-    model.load_state_dict(torch.load(args.pretrained_root, map_location="cpu"))
+    model = FewShotSeg(args.dataset, use_coco_init=False,k=args.k)
+    model = model.cuda()
+    # model = nn.DataParallel(model.cuda())
+    model.load_state_dict(torch.load(args.pretrained_root, map_location="cpu"), strict=False)
 
     # Data loader.
     test_dataset = TestDataset(args)
@@ -67,8 +75,7 @@ def main():
     # Inference.
     logger.info('  Start inference ... Note: EP1 is ' + str(args.EP1))
     logger.info('  Support: ' + str(test_dataset.support_dir[len(args.data_root):]))
-    logger.info('  Query: ' +
-                str([elem[len(args.data_root):] for elem in test_dataset.image_dirs]))
+    logger.info('  Query: ' + str([elem[len(args.data_root):] for elem in test_dataset.image_dirs]))
 
     # Get unique labels (classes).
     labels = get_label_names(args.dataset)
@@ -76,11 +83,11 @@ def main():
     # Loop over classes.
     class_dice = {}
     class_iou = {}
+    class_mcc = {}
     for label_val, label_name in labels.items():
 
         # Skip BG class.
-        if label_name is 'BG':
-            continue
+        if label_name == 'BG': continue
 
         logger.info('  *------------------Class: {}--------------------*'.format(label_name))
         logger.info('  *--------------------------------------------------*')
@@ -91,15 +98,28 @@ def main():
 
         # Infer.
         with torch.no_grad():
-            scores = infer(model, query_loader, support_sample, args, logger, label_name)
+            scores = infer(model, query_loader, support_sample, args, logger, label_name, args.dataset)
 
         # Log class-wise results
         class_dice[label_name] = torch.tensor(scores.patient_dice).mean().item()
         class_iou[label_name] = torch.tensor(scores.patient_iou).mean().item()
+        class_mcc[label_name] = torch.tensor(scores.patient_mcc).mean().item()
 
         logger.info('      Mean class IoU: {}'.format(class_iou[label_name]))
         logger.info('      Mean class Dice: {}'.format(class_dice[label_name]))
+        logger.info('      Mean class MCC: {}'.format(class_mcc[label_name]))
         logger.info('  *--------------------------------------------------*')
+
+        for k in scores.patient_dice_class.keys():
+            dice = torch.tensor(scores.patient_dice_class[k]).mean().item()
+            iou = torch.tensor(scores.patient_iou_class[k]).mean().item()
+            mcc = torch.tensor(scores.patient_mcc_class[k]).mean().item()
+
+            logger.info('      CLASS {}'.format(k))
+            logger.info('      Mean IoU: {}'.format(dice))
+            logger.info('      Mean Dice: {}'.format(iou))
+            logger.info('      Mean MCC: {}'.format(mcc))
+            logger.info('  *--------------------------------------------------*')
 
     # Log final results.
     logger.info('  *-----------------Final results--------------------*')
@@ -109,7 +129,7 @@ def main():
     logger.info('  *--------------------------------------------------*')
 
 
-def infer(model, query_loader, support_sample, args, logger, label_name):
+def infer(model, query_loader, support_sample, args, logger, label_name, dataset):
 
     # Test mode.
     model.eval()
@@ -119,13 +139,15 @@ def infer(model, query_loader, support_sample, args, logger, label_name):
     support_fg_mask = [support_sample['label'][[i]].float().cuda() for i in range(support_sample['image'].shape[0])]  # n_shot x H x W
 
     # Loop through query volumes.
-    scores = Scores()
+    flag_ctp = False if "CTP" not in dataset and "DWI" not in dataset else True
+    scores = Scores(flag_ctp)
     for i, sample in enumerate(query_loader):
-
+        torch.cuda.empty_cache()
+        prefix = 'image_' if "CTP" not in dataset and "DWI" not in dataset else 'study_'
         # Unpack query data.
         query_image = [sample['image'][i].float().cuda() for i in range(sample['image'].shape[0])]  # [C x 3 x H x W]
-        query_label = sample['label'].long()  # C x H x W
-        query_id = sample['id'][0].split('image_')[1][:-len('.nii.gz')]
+        query_label = sample['label'].long() if "CTP" not in dataset else sample['label'][:,:,0,...].long()  # C x H x W
+        query_id = sample['id'][0].split(prefix)[1][:-len('.nii.gz')] if "CTP" not in dataset else sample['id'][0].split(prefix)[1]
 
         # Compute output.
         if args.EP1 is True:
@@ -144,19 +166,35 @@ def infer(model, query_loader, support_sample, args, logger, label_name):
         else:  # EP 2
             query_pred, _, _ = model([support_image], [support_fg_mask], query_image, train=False)  # C x 2 x H x W
             query_pred = query_pred.argmax(dim=1).cpu()  # C x H x W
-
+            query_pred = query_pred.type(torch.uint8)
         # Record scores.
-        scores.record(query_pred, query_label)
+        scores.record(query_pred, query_label[0,...], query_id=query_id)
 
         # Log.
         logger.info('    Tested query volume: ' + sample['id'][0][len(args.data_root):]
-                    + '. Dice score:  ' + str(scores.patient_dice[-1].item()))
+                    + '. Dice score:  ' + str(round(scores.patient_dice[-1].item(),3))
+                    + '. IoU score:  ' + str(round(scores.patient_iou[-1].item(), 3))
+                    + '. MCC score:  ' + str(round(scores.patient_mcc[-1].item(), 3)))
 
         # Save predictions.
         file_name = 'image_' + query_id + '_' + label_name + '.pt'
         torch.save(query_pred, os.path.join(args.save, file_name))
 
+        save_vol(args,query_pred,query_id,label_name)
+        save_vol(args, query_label[0,...], query_id, label_name+"_label")
+
     return scores
+
+
+def save_vol(args,query_pred,query_id,label_name):
+    pat_dir = os.path.join(args.save,query_id)
+    if not os.path.isdir(pat_dir): os.makedirs(pat_dir)
+    if not os.path.isdir(os.path.join(pat_dir,label_name)): os.makedirs(os.path.join(pat_dir,label_name))
+    for s in range(query_pred.shape[0]):
+        s_id = str(s)
+        if len(s_id) == 1: s_id = "0" + s_id
+        img = (query_pred[s,...]*255.).numpy()
+        cv2.imwrite(os.path.join(pat_dir,label_name, s_id+".png"), img)
 
 
 if __name__ == '__main__':
