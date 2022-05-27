@@ -25,7 +25,7 @@ def parse_arguments():
     parser.add_argument('--data_root', type=str, required=True)
     parser.add_argument('--save_root', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
-    parser.add_argument('--n_sv', type=int, required=True)
+    parser.add_argument('--n_sv', type=int, required=True)  # flag number supervoxels
     parser.add_argument('--fold', type=int, required=True)
 
     # Training specs.
@@ -76,7 +76,7 @@ def main():
     # Init optimizer.
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     milestones = [(ii + 1) * 1000 for ii in range(args.steps // 1000 - 1)]
-    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)  # Deacy LR based on milestones
 
     # Define loss function.
     my_weight = torch.FloatTensor([args.bg_wt, 1.0]).cuda()

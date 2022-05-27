@@ -9,14 +9,20 @@ def get_label_names(dataset):
         label_names[1] = 'LV-MYO'
         label_names[2] = 'LV-BP'
         label_names[3] = 'RV'
-
     elif dataset == 'CHAOST2':
         label_names[0] = 'BG'
         label_names[1] = 'LIVER'
         label_names[2] = 'RK'
         label_names[3] = 'LK'
         label_names[4] = 'SPLEEN'
-
+    elif "CTP" in dataset:
+        label_names[0] = "BG"
+        label_names[1] = "hypoperfused"
+        # label_names[1] = "penumbra"
+        # label_names[2] = "core"
+    elif "DWI" in dataset:
+        label_names[0] = "BG"
+        label_names[1] = "core"
     return label_names
 
 
@@ -30,13 +36,33 @@ def get_folds(dataset):
         FOLD[4] = set(range(28, 35))
         FOLD[4].update([0])
         return FOLD
-
     elif dataset == 'CHAOST2':
         FOLD[0] = set(range(0, 5))
         FOLD[1] = set(range(4, 9))
         FOLD[2] = set(range(8, 13))
         FOLD[3] = set(range(12, 17))
         FOLD[4] = set(range(16, 20))
+        FOLD[4].update([0])
+        return FOLD
+    elif dataset == "CTP":
+        FOLD[0] = set(range(0, 62))
+        FOLD[1] = set(range(61, 123))
+        FOLD[2] = set(range(122, 184))
+        FOLD[3] = set(range(183, 245))
+        FOLD[4] = set(range(244, 304))
+        FOLD[4].update([0])
+        return FOLD
+    elif dataset == "CTP_TEST":
+        FOLD[0] = set(range(0, 6))
+        FOLD[1] = set(range(5, 10))
+        FOLD[1].update([0])
+        return FOLD
+    elif dataset == "DWI":
+        FOLD[0] = set(range(0, 22))
+        FOLD[1] = set(range(21, 44))
+        FOLD[2] = set(range(43, 66))
+        FOLD[3] = set(range(65, 88))
+        FOLD[4] = set(range(87, 110))
         FOLD[4].update([0])
         return FOLD
     else:
