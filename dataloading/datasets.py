@@ -34,21 +34,34 @@ class TestDataset(Dataset):
                                      "22_001", "22_007", "22_013", "22_019", "22_025", "22_031", "22_036",
                                      "22_043", "22_050", "22_055", "22_062", "23_003", "23_010", "23_014",
                                      "21_057", "21_059", "21_066", "21_068", "21_071", "21_073"]
+            self.val_patients = ['21_063', '01_004', '21_016', '21_021', '01_024', '21_029', '21_009', '21_051',
+                                 '01_076', '21_018', '01_028', '21_022', '21_050', '21_027', '01_006', '21_004',
+                                 '21_002', '21_026', '01_038', '01_033', '21_070', '21_023', '21_028', '20_007',
+                                 '01_040', '01_014', '01_034', '21_011', '21_075', '01_029', '01_063', '21_052',
+                                 '02_005', '22_015', '02_041', '02_038', '22_040', '02_003', '02_020', '22_016',
+                                 '22_060', '22_028', '02_018', '22_045', '22_003', '22_061', '22_042', '22_006',
+                                 '02_040', '02_022', '22_024', '02_026', '02_010', '22_004', '03_005', '03_002',
+                                 '23_004', '03_004', '23_005', '23_013']
 
         if 'CTP' not in args.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
-        else: self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] not in self.test_patients and fold.split("study_CTP_")[-1] not in self.exclude_patients]
+        else:
+            self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] not in self.val_patients
+                                and fold.split("study_CTP_")[-1] not in self.test_patients
+                                and fold.split("study_CTP_")[-1] not in self.exclude_patients]
+            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] in self.val_patients]
 
         if 'CTP' in args.dataset or "DWI" in args.dataset:
             self.image_test = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] in self.test_patients]
 
         # remove test fold!
-        self.FOLD = get_folds(args.dataset)
-        self.image_dirs = [elem for idx, elem in enumerate(self.image_dirs) if idx in self.FOLD[args.fold]]
+        if 'CTP' not in args.dataset:
+            self.FOLD = get_folds(args.dataset)
+            self.image_dirs = [elem for idx, elem in enumerate(self.image_dirs) if idx in self.FOLD[args.fold]]
 
         # split into support/query
-        self.support_dir = self.image_dirs[0]
-        self.image_dirs = self.image_dirs[1:] #+self.image_dirs[-4:]  # remove support
+        self.support_dir = self.support_dir[0:args.n_shot]  # [self.image_dirs[0]]
+        # self.image_dirs = self.image_dirs[6:]  # remove support
         # append the test patients
         for test_p in self.image_test: self.image_dirs.append(test_p)
         self.label = None
@@ -87,13 +100,13 @@ class TestDataset(Dataset):
                 sitk.ReadImage(img_path.split('study_')[0] + 'label_' + img_path.split('study_')[-1] + ".nii.gz"))
 
             div_val = 42
-            lbl_tmp[lbl_tmp <= 85 + div_val] = 0  # background
-            lbl_tmp[lbl_tmp > 85+div_val] = 1 # hypoperfused region
+            lbl_tmp[lbl_tmp <= 85+div_val] = 0  # background
+            lbl_tmp[lbl_tmp > 85+div_val] = 1  # hypoperfused region
             # lbl_tmp[np.logical_and(lbl_tmp > 85 + div_val, lbl_tmp <= 170 + div_val)] = 1  # penumbra
             # lbl_tmp[lbl_tmp > 170 + div_val] = 2  # core
             lbl_tmp = 1 * (lbl_tmp == self.label)
 
-            lbl = np.stack(30 * [lbl_tmp], axis=1) # stack the ground truth images together
+            lbl = np.stack(30 * [lbl_tmp], axis=1)  # stack the ground truth images together
 
         sample = {'id': img_path}
 
@@ -124,56 +137,60 @@ class TestDataset(Dataset):
         return (np.array(pcts) * C).astype('int')
 
     def getSupport(self, label=None, all_slices=True, N=None):
-        if label is None:
-            raise ValueError('Need to specify label class!')
+        if label is None: raise ValueError('Need to specify label class!')
 
-        img_path = self.support_dir
-        if "CTP" not in self.dataset:
-            prefix = "image_" if "DWI" not in self.dataset else "study_"
-            img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
-            img = (img - img.mean()) / (img.std() + 1e-5)
-            img = np.stack(3 * [img], axis=1)
+        arr_samples = []
+        if N is None: raise ValueError("Need to specify the number of shots")
 
-            lbl = sitk.GetArrayFromImage(sitk.ReadImage(img_path.split(prefix)[0] + 'label_' + img_path.split(prefix)[-1]))
-            if "DWI" not in self.dataset:
-                lbl[lbl == 200] = 1
-                lbl[lbl == 500] = 2
-                lbl[lbl == 600] = 3
-            else: lbl[lbl > 100] = 1
-            lbl = 1 * (lbl == label)
-        else:
-            slices = len(glob.glob(img_path + "/*"))
-            img = np.empty((slices, 30, 512, 512))
-            for slice_idx in range(slices):
-                image_path = os.path.join(img_path, str(slice_idx) + ".nii.gz")
-                img[slice_idx,...] = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
-            img = (img - img.mean()) / (img.std() + 1e-5)
+        for img_path in self.support_dir[:N]: # take the first N images for support
 
-            lbl_tmp = sitk.GetArrayFromImage(
-                sitk.ReadImage(img_path.split('study_')[0] + 'label_' + img_path.split('study_')[-1] + ".nii.gz"))
+            # img_path = self.support_dir
+            if "CTP" not in self.dataset:
+                prefix = "image_" if "DWI" not in self.dataset else "study_"
+                img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
+                img = (img - img.mean()) / (img.std() + 1e-5)
+                img = np.stack(3 * [img], axis=1)
 
-            div_val = 42
-            lbl_tmp[lbl_tmp <= 85+div_val] = 0 # background
-            lbl_tmp[lbl_tmp > 85+div_val] = 1 # hypoperfused region
-            # lbl_tmp[np.logical_and(lbl_tmp > 85+div_val, lbl_tmp <= 170+div_val)] = 1 # penumbra
-            # lbl_tmp[lbl_tmp > 170+div_val] = 2  # core
-            lbl_tmp = 1 * (lbl_tmp == label)
-            lbl = np.stack(30 * [lbl_tmp], axis=1)  # stack the ground truth images together
+                lbl = sitk.GetArrayFromImage(sitk.ReadImage(img_path.split(prefix)[0] + 'label_' + img_path.split(prefix)[-1]))
+                if "DWI" not in self.dataset:
+                    lbl[lbl == 200] = 1
+                    lbl[lbl == 500] = 2
+                    lbl[lbl == 600] = 3
+                else: lbl[lbl > 100] = 1
+                lbl = 1 * (lbl == label)
+            else:
+                slices = len(glob.glob(img_path + "/*"))
+                img = np.empty((slices, 30, 512, 512))
+                for slice_idx in range(slices):
+                    image_path = os.path.join(img_path, str(slice_idx) + ".nii.gz")
+                    img[slice_idx,...] = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
+                img = (img - img.mean()) / (img.std() + 1e-5)
 
-        sample = {}
-        if all_slices:
-            sample['image'] = torch.from_numpy(img)
-            sample['label'] = torch.from_numpy(lbl)
-        else:
-            # select N labeled slices
-            if N is None:
-                raise ValueError('Need to specify number of labeled slices!')
-            idx = lbl.sum(axis=(-2, -1)) > 0
-            idx_ = self.get_support_index(N, idx.sum())
-            sample['image'] = torch.from_numpy(img[idx][idx_])
-            sample['label'] = torch.from_numpy(lbl[idx][idx_])
+                lbl_tmp = sitk.GetArrayFromImage(
+                    sitk.ReadImage(img_path.split('study_')[0] + 'label_' + img_path.split('study_')[-1] + ".nii.gz"))
 
-        return sample
+                div_val = 42
+                lbl_tmp[lbl_tmp <= 85+div_val] = 0  # background
+                lbl_tmp[lbl_tmp > 85+div_val] = 1  # hypoperfused region
+                # lbl_tmp[np.logical_and(lbl_tmp > 85+div_val, lbl_tmp <= 170+div_val)] = 1 # penumbra
+                # lbl_tmp[lbl_tmp > 170+div_val] = 2  # core
+                lbl_tmp = 1 * (lbl_tmp == label)
+                lbl = np.stack(30 * [lbl_tmp], axis=1)  # stack the ground truth images together
+
+            sample = {}
+            if all_slices:
+                sample['image'] = torch.from_numpy(img)
+                sample['label'] = torch.from_numpy(lbl)
+            else:
+                # select N labeled slices
+                if N is None: raise ValueError('Need to specify number of labeled slices!')
+                idx = lbl.sum(axis=(-2, -1)) > 0
+                idx_ = self.get_support_index(N, idx.sum())
+                sample['image'] = torch.from_numpy(img[idx][idx_])
+                sample['label'] = torch.from_numpy(lbl[idx][idx_])
+            arr_samples.append(sample)
+
+        return arr_samples
 
 
 class TrainDataset(Dataset):
@@ -190,7 +207,7 @@ class TrainDataset(Dataset):
         self.min_size = args.min_size
         self.seed = args.seed
         self.use_labels_intrain = args.use_labels_intrain
-        self.nii_studies = "nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+        self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
         self.spv_fold = "supervoxels_ALL"
         self.spv_type = "3D-FELZENSZWALB_PMs_stacked_RGB_v3.0"
         self.spv_mask = "all_MASK"
@@ -216,6 +233,16 @@ class TrainDataset(Dataset):
                                      "22_001", "22_007", "22_013", "22_019", "22_025", "22_031", "22_036",
                                      "22_043", "22_050", "22_055", "22_062", "23_003", "23_010", "23_014",
                                      "21_057", "21_059", "21_066", "21_068", "21_071", "21_073"]
+            self.val_patients = ['21_063', '01_004', '21_016', '21_021', '01_024', '21_029', '21_009', '21_051',
+                                 '01_076', '21_018', '01_028', '21_022', '21_050', '21_027', '01_006', '21_004',
+                                 '21_002', '21_026', '01_038', '01_033', '21_070', '21_023', '21_028', '20_007',
+                                 '01_040', '01_014', '01_034', '21_011', '21_075', '01_029', '01_063', '21_052',
+                                 '02_005', '22_015', '02_041', '02_038', '22_040', '02_003', '02_020', '22_016',
+                                 '22_060', '22_028', '02_018', '22_045', '22_003', '22_061', '22_042', '22_006',
+                                 '02_040', '02_022', '22_024', '02_026', '02_010', '22_004', '03_005', '03_002',
+                                 '23_004', '03_004', '23_005', '23_013']
+
+        self.FOLD = get_folds(args.dataset)
 
         if 'CTP' not in args.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
@@ -227,18 +254,22 @@ class TrainDataset(Dataset):
                 idpatients = [fold.split("/study_")[-1].split(".nii.gz")[0] for fold in self.image_dirs]
                 self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1] in idpatients]
         else:
-            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_")[-1] not in self.test_patients or fold.split("study_")[-1] not in self.exclude_patients]
+            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_")[-1][4:] not in self.test_patients
+                               and fold.split("study_")[-1][4:] not in self.exclude_patients]
             if self.use_labels_intrain:
-                self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("label_")[-1] not in self.test_patients or fold.split("label_")[-1] not in self.exclude_patients]
+                self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("label_")[-1][4:] not in self.test_patients
+                                    and fold.split("label_")[-1][4:] not in self.exclude_patients]
             else: self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.spv_fold, self.spv_type, self.spv_mask, "CTP_*"))
 
         if "CTP" in args.dataset or "DWI" in args.dataset:
-            self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1] not in self.test_patients or fold.split("/")[-1] not in self.exclude_patients]
+            self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1][4:] not in self.test_patients and fold.split("/")[-1][4:] not in self.exclude_patients]
             self.image_dirs.sort()
             self.sprvxl_dirs.sort()
 
-        # remove test fold!
-        self.FOLD = get_folds(args.dataset)
+            val_idx = [idx for idx, fold in enumerate(self.image_dirs) if fold.split("study_")[-1][4:] in self.val_patients]
+            self.FOLD[args.fold] = set(val_idx)  # the validation index becomes the FOLD and are excluded from
+
+        # remove val/test fold!
         self.image_dirs = [elem for idx, elem in enumerate(self.image_dirs) if idx not in self.FOLD[args.fold]]
         self.sprvxl_dirs = [elem for idx, elem in enumerate(self.sprvxl_dirs) if idx not in self.FOLD[args.fold]]
 

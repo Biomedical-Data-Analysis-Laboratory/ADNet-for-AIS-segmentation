@@ -41,6 +41,7 @@ class TVDeeplabRes101Encoder(nn.Module):
             low_level: whether returning aggregated low-level features in FCN
         """
         if "CTP" in self.dataset: x_in = self.layers_pre(x_in)
+
         fts = self.backbone(x_in)
         if self.use_aspp:
             fts256 = self.aspp_out(fts['out'])

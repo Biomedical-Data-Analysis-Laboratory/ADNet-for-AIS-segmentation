@@ -45,12 +45,13 @@ def get_folds(dataset):
         FOLD[4].update([0])
         return FOLD
     elif dataset == "CTP":
-        FOLD[0] = set(range(0, 62))
-        FOLD[1] = set(range(61, 123))
-        FOLD[2] = set(range(122, 184))
-        FOLD[3] = set(range(183, 245))
-        FOLD[4] = set(range(244, 304))
-        FOLD[4].update([0])
+        FOLD[0] = set(range(0,152))  # train
+        # FOLD[0] = set(range(0, 62))
+        # FOLD[1] = set(range(61, 123))
+        # FOLD[2] = set(range(122, 184))
+        # FOLD[3] = set(range(183, 245))
+        # FOLD[4] = set(range(244, 304))
+        # FOLD[4].update([0])
         return FOLD
     elif dataset == "CTP_TEST":
         FOLD[0] = set(range(0, 6))

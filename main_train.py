@@ -89,8 +89,8 @@ def main():
 
     # Init optimizer.
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    milestones = [(ii + 1) * 1000 for ii in range(args.steps // 1000 - 1)]
-    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)  # Deacy LR based on milestones
+    milestones = [(ii + 1) * 5000 for ii in range(args.steps // 5000 - 1)]
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)  # Decay LR based on milestones
 
     # Define loss function.
     my_weight = torch.cuda.FloatTensor([args.bg_wt, args.fg_wt]).cuda()
@@ -108,7 +108,7 @@ def main():
                                                num_workers=args.workers,
                                                pin_memory=True,
                                                drop_last=True)
-    logger.info('  Training on images not in test fold: ' +
+    logger.info('  Training on ' + str(len(train_dataset.image_dirs)) + ' images not in test fold: ' +
                 str([elem[len(args.data_root):] for elem in train_dataset.image_dirs]))
 
     # Start training.
@@ -199,8 +199,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
         batch_time.update(time.time() - end)
         end = time.time()
         i+=1
-        if i % 300==0:
-            if args.dataset=="CTP": feats = model.encoder.features["layers_pre"].cpu().detach().numpy()
+        if i % 500==0:
             support_img = support_images[0][0].squeeze().cpu().detach().numpy()[0]
             support_img = PIL.Image.fromarray(normalize(support_img).astype('uint8'))
             if support_img.mode == "F": support_img = support_img.convert("L")
@@ -230,6 +229,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
                            }
                        })})
             if args.dataset=="CTP":
+                feats = model.encoder.features["layers_pre"].cpu().detach().numpy()
                 wandb.log({
                     "first_conv_layer_1": wandb.Image(feats[0, ...].transpose(1, 2, 0)),
                     "first_conv_layer_2": wandb.Image(feats[1, ...].transpose(1, 2, 0))
