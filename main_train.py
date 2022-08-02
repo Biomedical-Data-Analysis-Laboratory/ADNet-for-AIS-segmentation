@@ -50,6 +50,7 @@ def parse_arguments():
     parser.add_argument('--k', default=0.5, type=float)
     parser.add_argument('--min_size', default=200, type=int)
     parser.add_argument('--sweep', default=False, action="store_true")
+    parser.add_argument('--original_ds', default=True, action="store_true")
     parser.add_argument('--use_labels_intrain', default=False, action="store_true")
 
     return parser.parse_args()
@@ -60,7 +61,7 @@ def main():
     torch.cuda.empty_cache()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
-    # Deterministic setting for reproducability.
+    # Deterministic setting for reproducibility.
     if args.seed is not None:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -70,7 +71,7 @@ def main():
     logger = set_logger(args.save_root, 'train.log')
     logger.info(args)
 
-    # Setup the path to save.
+    # Set up the path to save.
     add = ""
     if args.sweep:
         add += ".sweep"
@@ -129,13 +130,7 @@ def main():
         logger.info('  Align Loss  : {:.5f}'.format(align_loss))
         logger.info('  Threshold Loss  : {:.5f}'.format(t_loss))
 
-        wandb.log({
-            "epoch":epoch,
-            "loss": losses,
-            "q_loss": q_loss,
-            "align_loss": align_loss,
-            "t_loss": t_loss
-        })
+        wandb.log({"epoch": epoch,"loss": losses,"q_loss": q_loss,"align_loss": align_loss,"t_loss": t_loss})
 
     # Save trained model.
     logger.info('  Saving model ...')

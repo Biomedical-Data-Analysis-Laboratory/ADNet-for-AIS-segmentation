@@ -91,6 +91,15 @@ class AverageMeter(object):
         return fmtstr.format(**self.__dict__)
 
 
+def IOU(preds, label):
+    tp = torch.sum((label == 1) * (preds == 1), dtype=torch.float32)
+    tn = torch.sum((label == 0) * (preds == 0), dtype=torch.float32)
+    fp = torch.sum((label == 0) * (preds == 1), dtype=torch.float32)
+    fn = torch.sum((label == 1) * (preds == 0), dtype=torch.float32)
+    iou = tp / (tp + fp + fn + 1e-5)
+    return iou
+
+
 class Scores(object):
 
     def __init__(self, flag_ctp):
@@ -98,11 +107,16 @@ class Scores(object):
         self.TN = 0
         self.FP = 0
         self.FN = 0
+        self.LVO_confmat = {"TP":0,"TN":0,"FP":0,"FN":0}
+        self.SVO_confmat = {"TP":0,"TN":0,"FP":0,"FN":0}
+
+        self.coords,self.coords_LVO,self.coords_SVO = [],[],[]
         self.flag_ctp = flag_ctp
 
         self.patient_dice = []
         self.patient_iou = []
         self.patient_mcc = []
+        self.patient_roi = []
 
         self.patient_dice_class = {}
         self.patient_iou_class = {}
@@ -115,13 +129,17 @@ class Scores(object):
         tn = torch.sum((label == 0) * (preds == 0), dtype=torch.float32)
         fp = torch.sum((label == 0) * (preds == 1), dtype=torch.float32)
         fn = torch.sum((label == 1) * (preds == 0), dtype=torch.float32)
+        roi = torch.sum((label == 1), dtype=torch.float32)
 
         dice = (2 * tp) / (2 * tp + fp + fn + 1e-5)
         iou = tp / (tp + fp + fn + 1e-5)
-        mcc = ((tn * tp) - (fp * fn)) / torch.sqrt((tn + fn) * (fp + tp) * (tn + fp) * (fn + tp)) + 1e-5
+        mcc = ((tn * tp) - (fp * fn)) / (torch.sqrt((tn + fn) * (fp + tp) * (tn + fp) * (fn + tp)) + 1e-5)
         self.patient_dice.append(dice)
         self.patient_iou.append(iou)
         self.patient_mcc.append(mcc)
+        self.patient_roi.append(roi)
+
+        self.coords.append((roi.item(), dice))
 
         if self.flag_ctp:
             if "_00_" in query_id or "_01_" in query_id or "_20_" in query_id or "_21_" in query_id:
@@ -137,6 +155,11 @@ class Scores(object):
                 self.patient_dice_class["both"].append(dice)
                 self.patient_iou_class["both"].append(iou)
                 self.patient_mcc_class["both"].append(mcc)
+                self.coords_LVO.append((roi.item(), dice))
+                self.LVO_confmat["TP"]+=tp
+                self.LVO_confmat["FP"]+=fp
+                self.LVO_confmat["TN"]+=tn
+                self.LVO_confmat["FN"]+=fn
             elif "_02_" in query_id or "_22_" in query_id:
                 if "SVO" not in self.patient_dice_class.keys(): self.patient_dice_class["SVO"] = []
                 if "SVO" not in self.patient_iou_class.keys(): self.patient_iou_class["SVO"] = []
@@ -150,15 +173,29 @@ class Scores(object):
                 self.patient_dice_class["both"].append(dice)
                 self.patient_iou_class["both"].append(iou)
                 self.patient_mcc_class["both"].append(mcc)
+                self.coords_SVO.append((roi.item(), dice))
+                self.SVO_confmat["TP"] += tp
+                self.SVO_confmat["FP"] += fp
+                self.SVO_confmat["TN"] += tn
+                self.SVO_confmat["FN"] += fn
 
         self.TP += tp
         self.TN += tn
         self.FP += fp
         self.FN += fn
 
-    def compute_dice(self):
-        return 2 * self.TP / (2 * self.TP + self.FP + self.FN)
+    def compute_dice(self,flag=""):
+        if flag=="LVO": return 2 * self.LVO_confmat["TP"] / (2 * self.LVO_confmat["TP"] + self.LVO_confmat["FP"] + self.LVO_confmat["FN"])
+        elif flag=="SVO": return 2 * self.SVO_confmat["TP"] / (2 * self.SVO_confmat["TP"] + self.SVO_confmat["FP"] + self.SVO_confmat["FN"])
+        else: return 2 * self.TP / (2 * self.TP + self.FP + self.FN)
 
-    def compute_iou(self):
-        return self.TP / (self.TP + self.FP + self.FN)
+    def compute_iou(self,flag=""):
+        if flag=="LVO": return self.LVO_confmat["TP"] / (self.LVO_confmat["TP"] + self.LVO_confmat["FP"] + self.LVO_confmat["FN"])
+        elif flag=="SVO": return self.SVO_confmat["TP"] / (self.SVO_confmat["TP"] + self.SVO_confmat["FP"] + self.SVO_confmat["FN"])
+        else: return self.TP / (self.TP + self.FP + self.FN)
+
+    def get_coords(self, flag, index):
+        if flag=="LVO": return [el[index] for el in self.coords_LVO]
+        elif flag=="SVO": return [el[index] for el in self.coords_SVO]
+        else: return [el[index] for el in self.coords]
 

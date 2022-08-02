@@ -18,6 +18,7 @@ class FewShotSeg(nn.Module):
         self.scaler = 20.0  # == alpha
         self.k = k
         self.criterion = nn.NLLLoss()
+        self.n_shots = 0
 
     def forward(self, supp_imgs, fore_mask, qry_imgs, train=False, t_loss_scaler=1):
         """
@@ -179,7 +180,6 @@ class FewShotSeg(nn.Module):
     def getPred(self, sim, thresh):
         pred = []
         # Soft thresholding by applying a shifted Sigmoid
-        for s, t in zip(sim, thresh):
-            pred.append(1.0 - torch.sigmoid(self.k * (s - t)))
+        for s, t in zip(sim, thresh): pred.append(1.0 - torch.sigmoid(self.k * (s - t)))
 
         return torch.stack(pred, dim=1)  # N x Wa x H' x W'

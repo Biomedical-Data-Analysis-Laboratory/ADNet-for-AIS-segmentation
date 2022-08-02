@@ -16,6 +16,7 @@ class TestDataset(Dataset):
         self.image_test = []
         self.dataset = args.dataset
         self.nii_studies = "nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+        if args.original_ds: self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
 
         # reading the paths
         if args.dataset == 'CMR':
@@ -23,6 +24,12 @@ class TestDataset(Dataset):
         elif args.dataset == 'CHAOST2':
             self.image_dirs = glob.glob(os.path.join(args.data_root, 'chaos_MR_T2_normalized/image*'))
         elif 'CTP' in args.dataset or 'DWI' in args.dataset:
+            if args.dataset == "CTP_LVO":
+                self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_00*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_01*'))
+                if not args.original_ds: self.image_dirs += (glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_20*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_21*')))
+            elif args.dataset == "CTP_Non-LVO":
+                self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_02*'))
+                if not args.original_ds: self.image_dirs += glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_22*'))
             self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'study_*'))
             self.test_patients = ["01_001", "01_007", "01_013", "01_019", "01_025", "01_031",
                                   "01_037", "01_044", "01_049", "01_053", "01_061", "01_067", "01_074",
@@ -56,11 +63,14 @@ class TestDataset(Dataset):
 
         # remove test fold!
         if 'CTP' not in args.dataset:
-            self.FOLD = get_folds(args.dataset)
+            self.FOLD = get_folds(args.dataset, args.original_ds)
             self.image_dirs = [elem for idx, elem in enumerate(self.image_dirs) if idx in self.FOLD[args.fold]]
 
         # split into support/query
-        self.support_dir = self.support_dir[0:args.n_shot]  # [self.image_dirs[0]]
+        if args.dataset == "CTP_Non-LVO":
+            if args.n_shot==1: self.support_dir = [self.support_dir[2]]
+            else: self.support_dir = [self.support_dir[2],self.support_dir[3],self.support_dir[5],self.support_dir[6],self.support_dir[8]]
+        else: self.support_dir = self.support_dir[0:args.n_shot]  # [self.image_dirs[0]]
         # self.image_dirs = self.image_dirs[6:]  # remove support
         # append the test patients
         for test_p in self.image_test: self.image_dirs.append(test_p)
@@ -214,14 +224,24 @@ class TrainDataset(Dataset):
         self.spv_prefix = 'superpix-3D_felzenszwalb_'
 
         # reading the paths (leaving the reading of images into memory to __getitem__)
-        if args.dataset == 'CMR':
-            self.image_dirs = glob.glob(os.path.join(args.data_root, 'cmr_MR_normalized/image*'))
-        elif args.dataset == 'CHAOST2':
-            self.image_dirs = glob.glob(os.path.join(args.data_root, 'chaos_MR_T2_normalized/image*'))
+        if args.dataset == 'CMR': self.image_dirs = glob.glob(os.path.join(args.data_root, 'cmr_MR_normalized/image*'))
+        elif args.dataset == 'CHAOST2': self.image_dirs = glob.glob(os.path.join(args.data_root, 'chaos_MR_T2_normalized/image*'))
         elif 'CTP' in args.dataset or 'DWI' in args.dataset:
-            self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'study_*'))
-
-            self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'label_*'))
+            if args.dataset=="CTP_LVO":
+                self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_00*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_01*'))
+                self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies + 'label_CTP_00*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'label_CTP_01*'))
+                if not args.original_ds:
+                    self.image_dirs += (glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_20*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_21*')))
+                    self.sprvxl_dirs += (glob.glob(os.path.join(args.data_root, self.nii_studies + 'label_CTP_20*'))+glob.glob(os.path.join(args.data_root, self.nii_studies + 'label_CTP_21*')))
+            elif args.dataset=="CTP_Non-LVO":
+                self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'study_CTP_02*'))
+                self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'label_CTP_02*'))
+                if not args.original_ds:
+                    self.image_dirs += glob.glob(os.path.join(args.data_root, self.nii_studies + 'study_CTP_22*'))
+                    self.sprvxl_dirs += glob.glob(os.path.join(args.data_root, self.nii_studies + 'label_CTP_22*'))
+            else:
+                self.image_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'study_CTP_*'))
+                self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.nii_studies+'label_CTP_*'))
 
             self.test_patients = ["01_001", "01_007", "01_013", "01_019", "01_025", "01_031",
                                   "01_037", "01_044", "01_049", "01_053", "01_061", "01_067", "01_074",
@@ -242,7 +262,7 @@ class TrainDataset(Dataset):
                                  '02_040', '02_022', '22_024', '02_026', '02_010', '22_004', '03_005', '03_002',
                                  '23_004', '03_004', '23_005', '23_013']
 
-        self.FOLD = get_folds(args.dataset)
+        self.FOLD = get_folds(args.dataset, args.original_ds)
 
         if 'CTP' not in args.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
@@ -259,7 +279,10 @@ class TrainDataset(Dataset):
             if self.use_labels_intrain:
                 self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("label_")[-1][4:] not in self.test_patients
                                     and fold.split("label_")[-1][4:] not in self.exclude_patients]
-            else: self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.spv_fold, self.spv_type, self.spv_mask, "CTP_*"))
+            else:
+                self.sprvxl_dirs = glob.glob(os.path.join(args.data_root, self.spv_fold, self.spv_type, self.spv_mask, "CTP_*"))
+                idpatients = [fold.split("/study_")[-1].split(".nii.gz")[0] for fold in self.image_dirs]
+                self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1] in idpatients]
 
         if "CTP" in args.dataset or "DWI" in args.dataset:
             self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1][4:] not in self.test_patients and fold.split("/")[-1][4:] not in self.exclude_patients]
@@ -366,7 +389,6 @@ class TrainDataset(Dataset):
 
                         # sprvxl_path = os.path.join(self.sprvxl_dirs[pat_idx],'superpix-MIDDLE_'+slc+".nii.gz")
                         sprvxl_path = os.path.join(self.sprvxl_dirs[pat_idx], self.spv_prefix + str(self.n_sv) + "_" + slc + ".nii.gz")
-
                         sprvxl[slice_idx, ...] = sitk.GetArrayFromImage(sitk.ReadImage(sprvxl_path))[:, :, 0]
 
         # normalize == after that -> mean=0, std=1
