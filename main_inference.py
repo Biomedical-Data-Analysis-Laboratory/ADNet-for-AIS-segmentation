@@ -14,6 +14,7 @@ import torch.utils.data
 import torch.utils.data.distributed
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
+import matplotlib.pyplot as plt
 
 from models.fewshot_anom import FewShotSeg
 from dataloading.datasets import TestDataset
@@ -35,6 +36,8 @@ def parse_arguments():
     parser.add_argument('--workers', default=0, type=int)
     parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--k', default=0.5, type=float)
+    parser.add_argument('--original_ds', default=True, action="store_true")
+    parser.add_argument('--CGM', default=False, type=bool)  # Cross-Guided Multiple Shot Learning
 
     return parser.parse_args()
 
@@ -74,7 +77,7 @@ def main():
 
     # Inference.
     logger.info('  Start inference ... Note: EP1 is ' + str(args.EP1))
-    logger.info('  Support: ' + str(test_dataset.support_dir[len(args.data_root):]))
+    logger.info('  Support: ' + str([elem[len(args.data_root):] for elem in test_dataset.support_dir]))  # str(test_dataset.support_dir[len(args.data_root):]))
     logger.info('  Query: ' + str([elem[len(args.data_root):] for elem in test_dataset.image_dirs]))
 
     # Get unique labels (classes).
@@ -101,19 +104,21 @@ def main():
             scores = infer(model, query_loader, support_sample, args, logger, label_name, args.dataset)
 
         # Log class-wise results
-        class_dice[label_name] = torch.tensor(scores.patient_dice).mean().item()
-        class_iou[label_name] = torch.tensor(scores.patient_iou).mean().item()
-        class_mcc[label_name] = torch.tensor(scores.patient_mcc).mean().item()
+        class_dice[label_name] = round(torch.tensor(scores.patient_dice).mean().item(),4)
+        class_iou[label_name] = round(torch.tensor(scores.patient_iou).mean().item(),4)
+        class_mcc[label_name] = round(torch.tensor(scores.patient_mcc).mean().item(),4)
 
+        logger.info('  *-----------------Final results--------------------*')
+        logger.info('  *--------------------------------------------------*')
         logger.info('      Mean class IoU: {}'.format(class_iou[label_name]))
         logger.info('      Mean class Dice: {}'.format(class_dice[label_name]))
         logger.info('      Mean class MCC: {}'.format(class_mcc[label_name]))
         logger.info('  *--------------------------------------------------*')
 
         for k in scores.patient_dice_class.keys():
-            dice = torch.tensor(scores.patient_dice_class[k]).mean().item()
-            iou = torch.tensor(scores.patient_iou_class[k]).mean().item()
-            mcc = torch.tensor(scores.patient_mcc_class[k]).mean().item()
+            dice = round(torch.tensor(scores.patient_dice_class[k]).mean().item(),4)
+            iou = round(torch.tensor(scores.patient_iou_class[k]).mean().item(),4)
+            mcc = round(torch.tensor(scores.patient_mcc_class[k]).mean().item(),4)
 
             logger.info('      CLASS {}'.format(k))
             logger.info('      Mean IoU: {}'.format(dice))
@@ -122,27 +127,47 @@ def main():
             logger.info('  *--------------------------------------------------*')
 
     # Log final results.
-    logger.info('  *-----------------Final results--------------------*')
+    logger.info('  *---------------Aggregate results------------------*')
     logger.info('  *--------------------------------------------------*')
-    logger.info('  Mean IoU: {}'.format(class_iou))
-    logger.info('  Mean Dice: {}'.format(class_dice))
+    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou()))
+    logger.info('  Aggregate Dice: {}'.format(scores.compute_dice()))
+    logger.info('  *--------------------------------------------------*')
+    logger.info('  *----------------------LVO----------------------*')
+    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("LVO")))
+    logger.info('  Aggregate Dice: {}'.format(scores.compute_dice("LVO")))
+    logger.info('  *--------------------------------------------------*')
+    logger.info('  *----------------------SVO----------------------*')
+    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("SVO")))
+    logger.info('  Aggregate Dice : {}'.format(scores.compute_dice("SVO")))
     logger.info('  *--------------------------------------------------*')
 
+    for flag in ["LVO","SVO","ALL"]:
+        plt.scatter(scores.get_coords(flag, 0), scores.get_coords(flag, 1))
+        plt.xlabel("N. pixels")
+        plt.ylabel("Dice")
+        plt.title(flag)
+        plt.ylim(0, 1)
+        plt.savefig(os.path.join(args.save_root,"scatter_{}.png".format(flag)))
+        plt.cla()
 
-def infer(model, query_loader, support_sample, args, logger, label_name, dataset):
 
+def infer(model, query_loader, support_samples, args, logger, label_name, dataset):
     # Test mode.
     model.eval()
 
     # Unpack support data.
-    support_image = [support_sample['image'][[i]].float().cuda() for i in range(support_sample['image'].shape[0])]  # n_shot x 3 x H x W
-    support_fg_mask = [support_sample['label'][[i]].float().cuda() for i in range(support_sample['image'].shape[0])]  # n_shot x H x W
+    support_images, support_fg_masks = [], []
+    for support_sample in support_samples:
+        support_image = [support_sample['image'][[i]].float().cuda() for i in range(support_sample['image'].shape[0])]  # n_shot x 3 x H x W
+        support_fg_mask = [support_sample['label'][[i]].float().cuda() for i in range(support_sample['image'].shape[0])]  # n_shot x H x W
+        support_images.append(support_image)
+        support_fg_masks.append(support_fg_mask)
 
+    K = len(support_images)
     # Loop through query volumes.
     flag_ctp = False if "CTP" not in dataset and "DWI" not in dataset else True
     scores = Scores(flag_ctp)
     for i, sample in enumerate(query_loader):
-        torch.cuda.empty_cache()
         prefix = 'image_' if "CTP" not in dataset and "DWI" not in dataset else 'study_'
         # Unpack query data.
         query_image = [sample['image'][i].float().cuda() for i in range(sample['image'].shape[0])]  # [C x 3 x H x W]
@@ -150,7 +175,7 @@ def infer(model, query_loader, support_sample, args, logger, label_name, dataset
         query_id = sample['id'][0].split(prefix)[1][:-len('.nii.gz')] if "CTP" not in dataset else sample['id'][0].split(prefix)[1]
 
         # Compute output.
-        if args.EP1 is True:
+        if args.EP1 is True:  # TODO: add multiple support images
             # Match support slice and query sub-chunck.
             query_pred = torch.zeros(query_label.shape[-3:])
             C_q = sample['image'].shape[1]
@@ -164,9 +189,57 @@ def infer(model, query_loader, support_sample, args, logger, label_name, dataset
                 query_pred[idx_[sub_chunck]:idx_[sub_chunck+1]] = query_pred_s
 
         else:  # EP 2
-            query_pred, _, _ = model([support_image], [support_fg_mask], query_image, train=False)  # C x 2 x H x W
-            query_pred = query_pred.argmax(dim=1).cpu()  # C x H x W
-            query_pred = query_pred.type(torch.uint8)
+            query_pred = 0
+            if i==0: confident_score = [0]*K
+            if args.CGM and K>1:  # Cross-Guided Multiple Shot Learning
+                P_hat_q = [0]*K
+                for k, (support_image, support_fg_mask) in enumerate(zip(support_images, support_fg_masks)):
+                    slice_idx = [int(len(support_image)/2)-2,int(len(support_image)/2)-1,int(len(support_image)/2),int(len(support_image)/2)+1,int(len(support_image)/2)+2] # [int(len(support_image)/2)]
+                    # slice_idx = range(len(support_image))
+                    if i==0:
+                        confident_score[k] = [confident_score[k]]*len(slice_idx)
+                        for I_s_k, I_s_k_mask in zip(support_images, support_fg_masks):
+                            n_queries = len(I_s_k)
+                            img_size = I_s_k[0].shape[-2:]
+                            # the query image is the current support image
+                            qry_img = torch.stack(I_s_k, dim=0).view(n_queries, -1, img_size[0], img_size[1])
+                            # stack the masks accordingly for later IOU calculation
+                            masks_stack = torch.stack([torch.stack([mask[0][0]], dim=0) for mask in I_s_k_mask],
+                                                      dim=0).view(n_queries, img_size[0], img_size[1])
+                            for idx,s in enumerate(slice_idx):
+                                torch.cuda.empty_cache()
+                                G_i_s, _, _ = model([[support_image[s]]], [[support_fg_mask[s]]], [qry_img], train=False)
+                                m_hat = G_i_s.argmax(dim=1).cpu()
+                                m_hat = m_hat.type(torch.uint8)
+                                confident_score[k][idx] += IOU(m_hat, masks_stack.cpu())
+                        for idx in range(len(confident_score[k])): confident_score[k][idx] /= len(support_images)
+                        # confident_score[k] /= float(len(slice_idx))
+                    for idx,s in enumerate(slice_idx):
+                        torch.cuda.empty_cache()
+                        query_pred_tmp, _, _ = model([[support_image[s]]], [[support_fg_mask[s]]], query_image, train=False)
+                        # query_pred_tmp = query_pred_tmp.argmax(dim=1).cpu()
+                        # query_pred_tmp = query_pred_tmp.type(torch.uint8)
+                        P_hat_q[k] += (confident_score[k][idx] * query_pred_tmp.cpu())
+                    P_hat_q[k] /= float(K)
+                P_hat_q_fin = 0
+                for P_hat_q_tmp in P_hat_q: P_hat_q_fin+=P_hat_q_tmp
+                P_hat_q_fin /= float(K)
+                query_pred = []
+
+                soft = nn.Softmax(dim=0)
+                for s in range(P_hat_q_fin.shape[0]): query_pred.append(soft(P_hat_q_fin[s,...]))
+                query_pred = torch.stack(query_pred,dim=0)
+                query_pred = query_pred.argmax(dim=1).cpu()
+                query_pred = query_pred.type(torch.uint8)
+            else:
+                for support_image,support_fg_mask in zip(support_images,support_fg_masks):
+                    query_pred_tmp, _, _ = model([[support_image[int(len(support_image)/2)]]], [[support_fg_mask[int(len(support_image)/2)]]], query_image, train=False)  # C x 2 x H x W
+                    query_pred_tmp = query_pred_tmp.argmax(dim=1).cpu()  # C x H x W
+                    query_pred_tmp = query_pred_tmp.type(torch.uint8)
+                    query_pred += query_pred_tmp
+                query_pred = query_pred/float(len(support_images))
+                query_pred[query_pred>=0.5] = 1
+                query_pred[query_pred<0.5] = 0
         # Record scores.
         scores.record(query_pred, query_label[0,...], query_id=query_id)
 
@@ -174,7 +247,8 @@ def infer(model, query_loader, support_sample, args, logger, label_name, dataset
         logger.info('    Tested query volume: ' + sample['id'][0][len(args.data_root):]
                     + '. Dice score:  ' + str(round(scores.patient_dice[-1].item(),3))
                     + '. IoU score:  ' + str(round(scores.patient_iou[-1].item(), 3))
-                    + '. MCC score:  ' + str(round(scores.patient_mcc[-1].item(), 3)))
+                    + '. MCC score:  ' + str(round(scores.patient_mcc[-1].item(), 3))
+                    + '. ROI pixels:  ' + str(round(scores.patient_roi[-1].item(), 3)))
 
         # Save predictions.
         file_name = 'image_' + query_id + '_' + label_name + '.pt'
