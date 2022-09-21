@@ -63,12 +63,16 @@ def get_folds(dataset, original_ds):
         else: FOLD[0] = set(range(77,137)).union(range(229,289))  # train
         return FOLD
     elif dataset == "DWI":
-        FOLD[0] = set(range(0, 22))
-        FOLD[1] = set(range(21, 44))
-        FOLD[2] = set(range(43, 66))
-        FOLD[3] = set(range(65, 88))
-        FOLD[4] = set(range(87, 110))
-        FOLD[4].update([0])
+        if original_ds: FOLD[0] = set(range(0,110))
+        else: FOLD[0] = set(range(0,220))
+        return FOLD
+    elif dataset == "DWI_LVO":
+        if original_ds: FOLD[0] = set(range(0,64))
+        else: FOLD[0] = set(range(0,220))
+        return FOLD
+    elif dataset == "DWI_Non-LVO":
+        if original_ds: FOLD[0] = set(range(64,110))
+        else: FOLD[0] = set(range(0,220))
         return FOLD
     else:
         raise ValueError(f'Dataset: {dataset} not found')
