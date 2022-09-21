@@ -7,28 +7,31 @@ from .backbone.resnext3D import resnext101
 
 class FewShotSeg(nn.Module):
 
-    def __init__(self, args):
+    def __init__(self, dataset, k):
         super().__init__()
 
         # Encoder
-        self.encoder = nn.Sequential(resnext101(replace_stride_with_dilation=[False, True, True]),
+        self.dataset = dataset
+        self.encoder = nn.Sequential(nn.Conv3d(30, 3, kernel_size=1, stride=1, bias=False),
+                                     resnext101(replace_stride_with_dilation=[False, True, True]),
                                      nn.Conv3d(2048, 256, kernel_size=1, stride=1, bias=False))
         self.device = torch.device('cuda')
         self.t = Parameter(torch.Tensor([-10.0]))
-        self.scaler = 20.0
+        self.scaler = 20.0  # == alpha
+        self.k = k
         self.criterion = nn.NLLLoss()
+        self.n_shots = 0
 
     def forward(self, supp_imgs, fore_mask, qry_imgs, train=False, t_loss_scaler=1):
         """
         Args:
             supp_imgs: support images
-                way x shot x [B x 3 x H x W], list of lists of tensors
+                way x shot x [B x 30 x 3 x H x W], list of lists of tensors
             fore_mask: foreground masks for support images
-                way x shot x [B x H x W], list of lists of tensors
-            back_mask: background masks for support images
-                way x shot x [B x H x W], list of lists of tensors
+                way x shot x [B x 3 x H x W], list of lists of tensors
             qry_imgs: query images
-                N x [B x 3 x H x W], list of tensors
+                N x [B x 30 x 3 x H x W], list of tensors
+            train: flag for training
         """
 
         n_ways = len(supp_imgs)
@@ -38,22 +41,21 @@ class FewShotSeg(nn.Module):
         img_size = qry_imgs[0].shape[-3:]
 
         # ###### Extract features ######
-        s_imgs_concat = torch.cat([torch.stack(way, dim=0) for way in supp_imgs], dim=0)
-        q_imgs_concat = torch.cat(qry_imgs, dim=0)
+        s_imgs_concat = torch.cat([torch.stack(way, dim=0) for way in supp_imgs], dim=0)  # Wa x Sh x [T x S x H x W]
+        q_imgs_concat = torch.cat(qry_imgs, dim=0)  # N_Q x [T x S x H x W]
 
-        s_img_fts = self.encoder(s_imgs_concat.repeat([1, 3, 1, 1, 1]))
-        q_img_fts = self.encoder(q_imgs_concat.repeat([1, 3, 1, 1, 1]))
+        s_img_fts = self.encoder(s_imgs_concat[0, ...])  # Wa x [C x S' x H' x W']
+        q_img_fts = self.encoder(q_imgs_concat)  # Wa x [C x S' x H' x W']
+        # s_img_fts = self.encoder(s_imgs_concat.repeat([1, 3, 1, 1, 1]))
+        # q_img_fts = self.encoder(q_imgs_concat.repeat([1, 3, 1, 1, 1]))
 
         s_fts_size = s_img_fts.shape[-3:]
         q_fts_size = q_img_fts.shape[-3:]
 
-        supp_fts = s_img_fts.view(
-            n_ways, self.n_shots, batch_size, -1, *s_fts_size)  # Wa x Sh x B x C x D' x H' x W'
-        qry_fts = q_img_fts.view(
-            n_queries, batch_size, -1, *q_fts_size)  # N x B x C x D' x H' x W'
+        supp_fts = s_img_fts.view(n_ways, self.n_shots, batch_size, -1, *s_fts_size)  # Wa x Sh x B x C x D' x H' x W'
+        qry_fts = q_img_fts.view(n_queries, batch_size, -1, *q_fts_size)  # N x B x C x D' x H' x W'
 
-        fore_mask = torch.stack([torch.stack(way, dim=0)
-                                 for way in fore_mask], dim=0)  # Wa x Sh x B x H' x W'
+        fore_mask = torch.stack([torch.stack(way, dim=0) for way in fore_mask], dim=0)  # Wa x Sh x B x H' x W'
 
         ###### Compute loss ######
         align_loss = torch.zeros(1).to(self.device)
@@ -61,8 +63,7 @@ class FewShotSeg(nn.Module):
         for epi in range(batch_size):
 
             ###### Extract prototypes ######
-            supp_fts_ = [[self.getFeatures(supp_fts[way, shot, [epi]],
-                                           fore_mask[way, shot, [epi]])
+            supp_fts_ = [[self.getFeatures(supp_fts[way, shot, [epi]], fore_mask[way, shot, [epi]])
                           for shot in range(self.n_shots)] for way in range(n_ways)]
 
             fg_prototypes = self.getPrototype(supp_fts_)
@@ -113,16 +114,15 @@ class FewShotSeg(nn.Module):
         Extract foreground and background features via masked average pooling
 
         Args:
-            fts: input features, expect shape: 1 x C x H' x W'
-            mask: binary mask, expect shape: 1 x H x W
+            fts: input features, expect shape: 1 x C x D' x H' x W'
+            mask: binary mask, expect shape: 1 x S x H x W
         """
+        # fts = F.interpolate(fts, size=mask.shape[-3:], mode='trilinear')
+        mask = F.interpolate(mask[None], size=fts.shape[-3:], mode='nearest')[0]  # 1 x 1 x D' x H' x W'
 
-        #fts = F.interpolate(fts, size=mask.shape[-3:], mode='trilinear')
-        mask = F.interpolate(mask[None], size=fts.shape[-3:], mode='nearest')[0]
-
+        # mask = mask if "CTP" not in self.dataset else mask[0,...]  # if we are dealing with CTP just take the first mask!
         # masked fg features
-        masked_fts = torch.sum(fts * mask[None, ...], dim=(2, 3, 4)) \
-                     / (mask[None, ...].sum(dim=(2, 3, 4)) + 1e-5)  # 1 x C
+        masked_fts = torch.sum(fts * mask[None, ...], dim=(2,3,4))/(mask[None, ...].sum(dim=(2,3,4)) + 1e-5)  # 1 x C
 
         return masked_fts
 
@@ -138,8 +138,7 @@ class FewShotSeg(nn.Module):
         """
 
         n_ways, n_shots = len(fg_fts), len(fg_fts[0])
-        fg_prototypes = [torch.sum(torch.cat([tr for tr in way], dim=0), dim=0, keepdim=True) / n_shots for way in
-                         fg_fts]  ## concat all fg_fts
+        fg_prototypes = [torch.sum(torch.cat([tr for tr in way], dim=0), dim=0, keepdim=True) / n_shots for way in fg_fts]  # concat all fg_fts
 
         return fg_prototypes
 
@@ -160,8 +159,7 @@ class FewShotSeg(nn.Module):
         # Compute the support loss
         loss = torch.zeros(1).to(self.device)
         for way in range(n_ways):
-            if way in skip_ways:
-                continue
+            if way in skip_ways: continue
             # Get the query prototypes
             for shot in range(n_shots):
                 img_fts = supp_fts[way, [shot]]
@@ -184,10 +182,7 @@ class FewShotSeg(nn.Module):
 
     def getPred(self, sim, thresh):
         pred = []
-
-        for s, t in zip(sim, thresh):
-            pred.append(1.0 - torch.sigmoid(0.5 * (s - t)))
+        # Soft thresholding by applying a shifted Sigmoid
+        for s, t in zip(sim, thresh): pred.append(1.0 - torch.sigmoid(0.5 * (s - t)))
 
         return torch.stack(pred, dim=1)  # N x Wa x H' x W'
-
-

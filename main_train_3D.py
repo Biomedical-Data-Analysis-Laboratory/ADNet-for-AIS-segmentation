@@ -2,9 +2,13 @@
 
 import argparse
 import time
+import wandb
+import glob
 import random
+import PIL
 import numpy as np
 
+import tqdm
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
@@ -25,7 +29,7 @@ def parse_arguments():
     parser.add_argument('--data_root', type=str, required=True)
     parser.add_argument('--save_root', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
-    parser.add_argument('--n_sv', type=int, required=True)
+    parser.add_argument('--n_sv', type=int, required=True)  # flag number supervoxels
     parser.add_argument('--fold', type=int, required=True)
 
     # Training specs.
@@ -46,6 +50,12 @@ def parse_arguments():
     parser.add_argument('--t_loss_scaler', default=1.0, type=float)
     parser.add_argument('--min_size', default=200, type=int)
 
+    parser.add_argument('--fg_wt', default=1.0, type=float)
+    parser.add_argument('--gpu', default=0, type=int)
+    parser.add_argument('--k', default=0.5, type=float)
+    parser.add_argument('--original_ds', default=True, action="store_true")
+    parser.add_argument('--sweep', default=False, action="store_true")
+    parser.add_argument('--use_labels_intrain', default=False, action="store_true")
     # Inference specs.
     parser.add_argument('--all_slices', default=True, type=bool)
     parser.add_argument('--EP1', default=False, type=bool)
@@ -55,8 +65,10 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    torch.cuda.empty_cache()
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
-    # Deterministic setting for reproducability.
+    # Deterministic setting for reproducibility.
     if args.seed is not None:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -66,20 +78,30 @@ def main():
     logger = set_logger(args.save_root, 'train.log')
     logger.info(args)
 
-    # Setup the path to save.
-    args.save_model_path = os.path.join(args.save_root, 'model.pth')
+    # Set up the path to save.
+    add = ""
+    if args.sweep:
+        add += ".sweep"
+        n_save_folds = len(glob.glob(os.path.join(args.save_root, 'model'+add+"*")))
+        n_save_folds = str(n_save_folds)
+        if len(n_save_folds) == 1: n_save_folds = "0" + n_save_folds
+        add += ("."+n_save_folds)
+    args.save_model_path = os.path.join(args.save_root, 'model'+add+'.pth')
+
+    init_wandb(args)
 
     # Init model.
-    model = FewShotSeg(args)
-    model = nn.DataParallel(model.cuda())
+    model = FewShotSeg(args.dataset, k=args.k)
+    model = model.cuda()
+    # model = nn.DataParallel(model.cuda())
 
     # Init optimizer.
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     milestones = [(ii + 1) * 1000 for ii in range(args.steps // 1000 - 1)]
-    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)  # Decay LR based on milestones
 
     # Define loss function.
-    my_weight = torch.FloatTensor([args.bg_wt, 1.0]).cuda()
+    my_weight = torch.FloatTensor([args.bg_wt, args.fg_wt]).cuda()
     criterion = nn.NLLLoss(ignore_index=255, weight=my_weight)
 
     # Enable cuDNN benchmark mode to select the fastest convolution algorithm.
@@ -88,9 +110,13 @@ def main():
 
     # Define data set and loader.
     train_dataset = TrainDataset(args)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                                               num_workers=args.workers, pin_memory=True, drop_last=True)
-    logger.info('  Training on images not in test fold: ' +
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=args.batch_size,
+                                               shuffle=True,
+                                               num_workers=args.workers,
+                                               pin_memory=True,
+                                               drop_last=True)
+    logger.info('  Training on ' + str(len(train_dataset.image_dirs)) + ' images not in test fold: ' +
                 str([elem[len(args.data_root):] for elem in train_dataset.image_dirs]))
 
     # Start training.
@@ -111,8 +137,9 @@ def main():
         logger.info('  Align Loss  : {:.5f}'.format(align_loss))
         logger.info('  Threshold Loss  : {:.5f}'.format(t_loss))
 
-        if epoch == 29:
-            torch.save(model.state_dict(), args.save_model_path)
+        if epoch == 29: torch.save(model.state_dict(), args.save_model_path)
+
+        wandb.log({"epoch": epoch,"loss": losses,"q_loss": q_loss,"align_loss": align_loss,"t_loss": t_loss})
 
     # Save trained model.
     logger.info('  Saving model ...')
@@ -131,13 +158,11 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, args):
     model.train()
 
     end = time.time()
-    for i, sample in enumerate(train_loader):
+    for sample in tqdm.tqdm(train_loader):
 
         # Extract episode data.
-        support_images = [[shot[None].float().cuda() for shot in way]
-                          for way in sample['support_images']]
-        support_fg_mask = [[shot[None].float().cuda() for shot in way]
-                           for way in sample['support_fg_labels']]
+        support_images = [[shot[None].float().cuda() for shot in way] for way in sample['support_images']]
+        support_fg_mask = [[shot[None].float().cuda() for shot in way] for way in sample['support_fg_labels']]
 
         query_images = [query_image.float().cuda() for query_image in sample['query_images']]
         query_labels = torch.cat([query_label.long().cuda() for query_label in sample['query_labels']], dim=0)
@@ -150,12 +175,11 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, args):
                                                     train=True, t_loss_scaler=args.t_loss_scaler)
 
         query_loss = criterion(torch.log(torch.clamp(query_pred, torch.finfo(torch.float32).eps,
-                                                     1 - torch.finfo(torch.float32).eps)), query_labels[None])
+                                                     1 - torch.finfo(torch.float32).eps)), query_labels[None,...])
         loss = query_loss + align_loss + thresh_loss
 
         # compute gradient and do SGD step
-        for param in model.parameters():
-            param.grad = None
+        for param in model.parameters(): param.grad = None
 
         loss.backward()
         optimizer.step()
