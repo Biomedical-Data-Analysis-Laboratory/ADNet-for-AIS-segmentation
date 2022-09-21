@@ -7,14 +7,16 @@ from .backbone.torchvision_backbones import TVDeeplabRes101Encoder
 
 class FewShotSeg(nn.Module):
 
-    def __init__(self, use_coco_init=True):
+    def __init__(self, dataset, k, use_coco_init=True):
         super().__init__()
 
         # Encoder
-        self.encoder = TVDeeplabRes101Encoder(use_coco_init)
+        self.dataset = dataset
+        self.encoder = TVDeeplabRes101Encoder(use_coco_init, self.dataset)
         self.device = torch.device('cuda')
         self.t = Parameter(torch.Tensor([-10.0]))
-        self.scaler = 20.0
+        self.scaler = 20.0  # == alpha
+        self.k = k
         self.criterion = nn.NLLLoss()
 
     def forward(self, supp_imgs, fore_mask, qry_imgs, train=False, t_loss_scaler=1):
@@ -38,19 +40,15 @@ class FewShotSeg(nn.Module):
         img_size = supp_imgs[0][0].shape[-2:]
 
         # ###### Extract features ######
-        imgs_concat = torch.cat([torch.cat(way, dim=0) for way in supp_imgs]
-                                + [torch.cat(qry_imgs, dim=0), ], dim=0)
+        imgs_concat = torch.cat([torch.cat(way, dim=0) for way in supp_imgs] + [torch.cat(qry_imgs, dim=0), ], dim=0)
         img_fts = self.encoder(imgs_concat, low_level=False)
 
         fts_size = img_fts.shape[-2:]
 
-        supp_fts = img_fts[:n_ways * self.n_shots * batch_size].view(
-            n_ways, self.n_shots, batch_size, -1, *fts_size)  # Wa x Sh x B x C x H' x W'
-        qry_fts = img_fts[n_ways * self.n_shots * batch_size:].view(
-            n_queries, batch_size_q, -1, *fts_size)  # N x B x C x H' x W'
+        supp_fts = img_fts[:n_ways * self.n_shots * batch_size].view(n_ways, self.n_shots, batch_size, -1, *fts_size)  # Wa x Sh x B x C x H' x W'
+        qry_fts = img_fts[n_ways * self.n_shots * batch_size:].view(n_queries, batch_size_q, -1, *fts_size)  # N x B x C x H' x W'
 
-        fore_mask = torch.stack([torch.stack(way, dim=0)
-                                 for way in fore_mask], dim=0)  # Wa x Sh x B x H' x W'
+        fore_mask = torch.stack([torch.stack(way, dim=0) for way in fore_mask], dim=0)  # Wa x Sh x B x H' x W'
 
         ###### Compute loss ######
         align_loss = torch.zeros(1).to(self.device)
@@ -75,7 +73,7 @@ class FewShotSeg(nn.Module):
             pred = self.getPred(anom_s, self.thresh_pred)  # N x Wa x H' x W'
 
             pred_ups = F.interpolate(pred, size=img_size, mode='bilinear', align_corners=True)
-            pred_ups = torch.cat((1.0 - pred_ups, pred_ups), dim=1)
+            pred_ups = torch.cat((1.0 - pred_ups, pred_ups), dim=1)  # predicted background mask
 
             outputs.append(pred_ups)
 
@@ -100,7 +98,6 @@ class FewShotSeg(nn.Module):
             prototype: prototype of one semantic class
                 expect shape: 1 x C
         """
-
         sim = - F.cosine_similarity(fts, prototype[..., None, None], dim=1) * self.scaler
 
         return sim
@@ -114,12 +111,12 @@ class FewShotSeg(nn.Module):
             mask: binary mask, expect shape: 1 x H x W
         """
 
-        fts = F.interpolate(fts, size=mask.shape[-2:], mode='bilinear')
+        fts = F.interpolate(fts, size=mask.shape[-2:], mode='bilinear', align_corners=True)
 
+        mask = mask if "CTP" not in self.dataset else mask[0,0,...]  # if we are dealing with CTP just take the first mask!
         # masked fg features
-        masked_fts = torch.sum(fts * mask[None, ...], dim=(2, 3)) \
-                     / (mask[None, ...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
-
+        if "CTP" in self.dataset: masked_fts = torch.sum(fts * mask[None,None,...], dim=(2, 3)) / (mask[None,None,...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
+        else: masked_fts = torch.sum(fts * mask[None, ...], dim=(2, 3)) / (mask[None, ...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
         return masked_fts
 
     def getPrototype(self, fg_fts):
@@ -134,8 +131,7 @@ class FewShotSeg(nn.Module):
         """
 
         n_ways, n_shots = len(fg_fts), len(fg_fts[0])
-        fg_prototypes = [torch.sum(torch.cat([tr for tr in way], dim=0), dim=0, keepdim=True) / n_shots for way in
-                         fg_fts]  ## concat all fg_fts
+        fg_prototypes = [torch.sum(torch.cat([tr for tr in way], dim=0), dim=0, keepdim=True) / n_shots for way in fg_fts]  ## concat all fg_fts
 
         return fg_prototypes
 
@@ -153,8 +149,7 @@ class FewShotSeg(nn.Module):
         # Compute the support loss
         loss = torch.zeros(1).to(self.device)
         for way in range(n_ways):
-            if way in skip_ways:
-                continue
+            if way in skip_ways: continue
             # Get the query prototypes
             for shot in range(n_shots):
                 img_fts = supp_fts[way, [shot]]
@@ -165,9 +160,14 @@ class FewShotSeg(nn.Module):
                 pred_ups = torch.cat((1.0 - pred_ups, pred_ups), dim=1)
 
                 # Construct the support Ground-Truth segmentation
-                supp_label = torch.full_like(fore_mask[way, shot], 255, device=img_fts.device)
-                supp_label[fore_mask[way, shot] == 1] = 1
-                supp_label[fore_mask[way, shot] == 0] = 0
+                if "CTP" in self.dataset:
+                    supp_label = torch.full_like(fore_mask[way, shot, 0], 255, device=img_fts.device)
+                    supp_label[fore_mask[way, shot, 0] == 1] = 1
+                    supp_label[fore_mask[way, shot, 0] == 0] = 0
+                else:
+                    supp_label = torch.full_like(fore_mask[way, shot], 255, device=img_fts.device)
+                    supp_label[fore_mask[way, shot] == 1] = 1
+                    supp_label[fore_mask[way, shot] == 0] = 0
 
                 # Compute Loss
                 eps = torch.finfo(torch.float32).eps
@@ -178,13 +178,8 @@ class FewShotSeg(nn.Module):
 
     def getPred(self, sim, thresh):
         pred = []
-
+        # Soft thresholding by applying a shifted Sigmoid
         for s, t in zip(sim, thresh):
-            pred.append(1.0 - torch.sigmoid(0.5 * (s - t)))
+            pred.append(1.0 - torch.sigmoid(self.k * (s - t)))
 
         return torch.stack(pred, dim=1)  # N x Wa x H' x W'
-
-
-
-
-

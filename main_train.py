@@ -3,7 +3,12 @@
 import argparse
 import time
 import random
+import glob
+import wandb
+import PIL
+import numpy as np
 
+import tqdm
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
@@ -22,7 +27,7 @@ def parse_arguments():
     parser.add_argument('--data_root', type=str, required=True)
     parser.add_argument('--save_root', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
-    parser.add_argument('--n_sv', type=int, required=True)
+    parser.add_argument('--n_sv', type=int, required=True)  # flag number supervoxels
     parser.add_argument('--fold', type=int, required=True)
 
     # Training specs.
@@ -39,13 +44,22 @@ def parse_arguments():
     parser.add_argument('--weight-decay', default=0.0005, type=float)
     parser.add_argument('--seed', default=None, type=int)
     parser.add_argument('--bg_wt', default=0.1, type=float)
+    parser.add_argument('--fg_wt', default=1.0, type=float)
     parser.add_argument('--t_loss_scaler', default=1.0, type=float)
+    parser.add_argument('--gpu', default=0, type=int)
+    parser.add_argument('--k', default=0.5, type=float)
+    parser.add_argument('--min_size', default=200, type=int)
+    parser.add_argument('--sweep', default=False, action="store_true")
+    parser.add_argument('--original_ds', default=True, action="store_true")
+    parser.add_argument('--use_labels_intrain', default=False, action="store_true")
 
     return parser.parse_args()
 
 
 def main():
     args = parse_arguments()
+    torch.cuda.empty_cache()
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     # Deterministic setting for reproducability.
     if args.seed is not None:
@@ -58,21 +72,29 @@ def main():
     logger.info(args)
 
     # Setup the path to save.
-    args.save_model_path = os.path.join(args.save_root, 'model.pth')
+    add = ""
+    if args.sweep:
+        add += ".sweep"
+        n_save_folds = len(glob.glob(os.path.join(args.save_root, 'model'+add+"*")))
+        n_save_folds = str(n_save_folds)
+        if len(n_save_folds) == 1: n_save_folds = "0" + n_save_folds
+        add += ("."+n_save_folds)
+    args.save_model_path = os.path.join(args.save_root, 'model'+add+'.pth')
+
+    init_wandb(args)
 
     # Init model.
-    model = FewShotSeg(False)
-    model = nn.DataParallel(model.cuda())
+    model = FewShotSeg(args.dataset, use_coco_init=True, k=args.k)
+    model = model.cuda()
+    # model = nn.DataParallel(model.cuda())
 
     # Init optimizer.
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     milestones = [(ii + 1) * 1000 for ii in range(args.steps // 1000 - 1)]
-    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=args.lr_gamma)  # Decay LR based on milestones
 
     # Define loss function.
-    my_weight = torch.FloatTensor([args.bg_wt, 1.0]).cuda()
+    my_weight = torch.cuda.FloatTensor([args.bg_wt, args.fg_wt]).cuda()
     criterion = nn.NLLLoss(ignore_index=255, weight=my_weight)
 
     # Enable cuDNN benchmark mode to select the fastest convolution algorithm.
@@ -81,9 +103,13 @@ def main():
 
     # Define data set and loader.
     train_dataset = TrainDataset(args)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                                               num_workers=args.workers, pin_memory=True, drop_last=True)
-    logger.info('  Training on images not in test fold: ' +
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=args.batch_size,
+                                               shuffle=True,
+                                               num_workers=args.workers,
+                                               pin_memory=True,
+                                               drop_last=True)
+    logger.info('  Training on ' + str(len(train_dataset.image_dirs)) + ' images not in test fold: ' +
                 str([elem[len(args.data_root):] for elem in train_dataset.image_dirs]))
 
     # Start training.
@@ -91,10 +117,9 @@ def main():
     logger.info('  Start training ...')
 
     for epoch in range(sub_epochs):
-
         # Train.
         batch_time, data_time, losses, q_loss, align_loss, t_loss = train(train_loader, model, criterion, optimizer,
-                                                                          scheduler, args)
+                                                                          scheduler, args, epoch)
 
         # Log
         logger.info('============== Epoch [{}] =============='.format(epoch))
@@ -105,12 +130,20 @@ def main():
         logger.info('  Align Loss  : {:.5f}'.format(align_loss))
         logger.info('  Threshold Loss  : {:.5f}'.format(t_loss))
 
+        wandb.log({
+            "epoch":epoch,
+            "loss": losses,
+            "q_loss": q_loss,
+            "align_loss": align_loss,
+            "t_loss": t_loss
+        })
+
     # Save trained model.
     logger.info('  Saving model ...')
     torch.save(model.state_dict(), args.save_model_path)
 
 
-def train(train_loader, model, criterion, optimizer, scheduler, args):
+def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
 
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -119,20 +152,25 @@ def train(train_loader, model, criterion, optimizer, scheduler, args):
     a_loss = AverageMeter('Align loss', ':.4f')
     t_loss = AverageMeter('Threshold loss', ':.4f')
 
+    # Unfreeze encoder layers
+    if epoch == 10 and "CTP" in args.dataset:
+        for param in model.parameters(): param.requires_grad = True
     # Train mode.
     model.train()
 
     end = time.time()
-    for i, sample in enumerate(train_loader):
-
+    i=0
+    for sample in tqdm.tqdm(train_loader):
         # Extract episode data.
-        support_images = [[shot.float().cuda() for shot in way]
-                          for way in sample['support_images']]
-        support_fg_mask = [[shot.float().cuda() for shot in way]
-                           for way in sample['support_fg_labels']]
+        if not sample: continue  # the dict is empty
+        support_images = [[shot.float().cuda() for shot in way] for way in sample['support_images']]
+        support_fg_mask = [[shot.float().cuda() for shot in way] for way in sample['support_fg_labels']]
 
         query_images = [query_image.float().cuda() for query_image in sample['query_images']]
         query_labels = torch.cat([query_label.long().cuda() for query_label in sample['query_labels']], dim=0)
+        if "CTP" in args.dataset: query_labels = query_labels[:,0,...]
+
+        sprvxl_toexp = sample['sprvxl_toexp'][0,...]
 
         # Log loading time.
         data_time.update(time.time() - end)
@@ -146,8 +184,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args):
         loss = query_loss + align_loss + thresh_loss
 
         # compute gradient and do SGD step
-        for param in model.parameters():
-            param.grad = None
+        for param in model.parameters(): param.grad = None
 
         loss.backward()
         optimizer.step()
@@ -162,10 +199,45 @@ def train(train_loader, model, criterion, optimizer, scheduler, args):
         # Log elapsed time.
         batch_time.update(time.time() - end)
         end = time.time()
+        i+=1
+        if i % 500==0:
+            support_img = support_images[0][0].squeeze().cpu().detach().numpy()[0]
+            support_img = PIL.Image.fromarray(normalize(support_img).astype('uint8'))
+            if support_img.mode == "F": support_img = support_img.convert("L")
+
+            qry_img = query_images[0][0].squeeze().cpu().detach().numpy()[0]
+            qry_img = PIL.Image.fromarray(normalize(qry_img).astype('uint8'))
+            if qry_img.mode == "F": qry_img = qry_img.convert("L")
+
+            sprvxl_toexp = PIL.Image.fromarray(sprvxl_toexp.squeeze().cpu().detach().numpy().astype('uint8'))
+            if sprvxl_toexp.mode == "F": sprvxl_toexp = sprvxl_toexp.convert("L")
+
+            wandb.log({"support_img": wandb.Image(support_img),
+                       "qry_img": wandb.Image(qry_img, masks={
+                           "predictions": {
+                               "mask_data": np.array(query_pred.squeeze()[1].cpu().detach().numpy()>0.5, dtype=np.uint8)
+                           },
+                           "ground_truth": {
+                               "mask_data": np.array((query_labels / query_labels.max()).squeeze().cpu().detach().numpy(), dtype=np.uint8)
+                           }
+                       }),
+                       "sprvxl_toexp": wandb.Image(sprvxl_toexp, masks={
+                           "predictions": {
+                               "mask_data": np.array(query_pred.squeeze()[1].cpu().detach().numpy() > 0.5, dtype=np.uint8)
+                           },
+                           "ground_truth": {
+                               "mask_data": np.array((query_labels / query_labels.max()).squeeze().cpu().detach().numpy(), dtype=np.uint8)
+                           }
+                       })})
+            if args.dataset=="CTP":
+                feats = model.encoder.features["layers_pre"].cpu().detach().numpy()
+                wandb.log({
+                    "first_conv_layer_1": wandb.Image(feats[0, ...].transpose(1, 2, 0)),
+                    "first_conv_layer_2": wandb.Image(feats[1, ...].transpose(1, 2, 0))
+                })
 
     return batch_time.avg, data_time.avg, losses.avg, q_loss.avg, a_loss.avg, t_loss.avg
 
 
 if __name__ == '__main__':
     main()
-
