@@ -99,9 +99,9 @@ class ResNeXt(nn.Module):
         self.layer2 = self._make_layer(
             block, 256, layers[1], shortcut_type, cardinality, stride=(1, 2, 2), dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(
-            block, 512, layers[2], shortcut_type, cardinality, stride=(1, 1, 1), dilate=replace_stride_with_dilation[1]) # (1, 2, 2) or (2 ,2, 2)
+            block, 512, layers[2], shortcut_type, cardinality, stride=(1, 1, 1), dilate=replace_stride_with_dilation[1])  # (1, 2, 2) or (2 ,2, 2)
         self.layer4 = self._make_layer(
-            block, 1024, layers[3], shortcut_type, cardinality, stride=(1, 1, 1), dilate=replace_stride_with_dilation[2])# (1, 2, 2) or (2 ,2, 2)
+            block, 1024, layers[3], shortcut_type, cardinality, stride=(1, 1, 1), dilate=replace_stride_with_dilation[2])  # (1, 2, 2) or (2 ,2, 2)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -195,7 +195,7 @@ def resnext101(**kwargs):
     """Constructs a ResNet-101 model.
     """
     model = ResNeXt(ResNeXtBottleneck, [3, 4, 23, 3], **kwargs)
-    model = nn.DataParallel(model, device_ids=[0, ])
+    # model = nn.DataParallel(model, device_ids=[0, ])
     load = True
     if load:
         print('Loading pre-trained weights!')

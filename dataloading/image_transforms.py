@@ -166,7 +166,7 @@ class RandomAffine(object):
 def affine_transform_via_M(image, M, borderMode=cv2.BORDER_CONSTANT, interp=cv2.INTER_NEAREST):
     imshape = image.shape
     shape_size = imshape[:2]
-
+    
     # Random affine
     warped = cv2.warpAffine(image.reshape(shape_size + (-1,)), M, shape_size[::-1],
                             flags=interp, borderMode=borderMode)
