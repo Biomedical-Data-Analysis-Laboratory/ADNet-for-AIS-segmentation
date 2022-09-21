@@ -1,0 +1,10 @@
+*/__pycache__/
+wandb/
+results/
+
+
+*.obj
+*.out
+/pretrained_model/
+/sweep.yaml
+/results_CTP_ALL/
