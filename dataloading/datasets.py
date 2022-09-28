@@ -49,7 +49,7 @@ class TestDataset(Dataset):
                                  '02_040', '02_022', '22_024', '02_026', '02_010', '22_004', '03_005', '03_002',
                                  '23_004', '03_004', '23_005', '23_013']
 
-        if 'CTP' not in args.dataset:
+        if 'CTP' not in args.dataset and "DWI" not in args.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
             # remove test fold!
             self.FOLD = get_folds(args.dataset, args.original_ds)
@@ -57,10 +57,10 @@ class TestDataset(Dataset):
             self.support_dir = self.image_dirs[-1]
             self.image_dirs = self.image_dirs[:-1]  # remove support
         else:
-            self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] not in self.val_patients
-                                and fold.split("study_CTP_")[-1] not in self.test_patients
-                                and fold.split("study_CTP_")[-1] not in self.exclude_patients]
-            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] in self.val_patients]
+            self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] not in self.val_patients
+                                and fold.split("study_CTP_")[-1][:6] not in self.test_patients
+                                and fold.split("study_CTP_")[-1][:6] not in self.exclude_patients]
+            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] in self.val_patients]
 
         if 'CTP' in args.dataset or "DWI" in args.dataset:
             self.image_test = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] in self.test_patients]
@@ -95,6 +95,7 @@ class TestDataset(Dataset):
                 lbl[lbl == 600] = 3
             else: lbl[lbl > 100] = 1
             lbl = 1 * (lbl == self.label)
+            if "DWI" in self.dataset: lbl = lbl.reshape((1,lbl.shape[0],lbl.shape[1],lbl.shape[2]))
         else:
             slices = len(glob.glob(img_path + "/*"))
             img = np.empty((slices, 30, 512, 512))
@@ -147,7 +148,7 @@ class TestDataset(Dataset):
         arr_samples = []
         if N is None: raise ValueError("Need to specify the number of shots")
 
-        for img_path in self.support_dir[:N]: # take the first N images for support
+        for img_path in self.support_dir[:N]:  # take the first N images for support
 
             # img_path = self.support_dir
             if "CTP" not in self.dataset:
@@ -163,6 +164,7 @@ class TestDataset(Dataset):
                     lbl[lbl == 600] = 3
                 else: lbl[lbl > 100] = 1
                 lbl = 1 * (lbl == label)
+                if "DWI" in self.dataset: lbl = lbl.reshape((lbl.shape[0],1,lbl.shape[1],lbl.shape[2]))
             else:
                 slices = len(glob.glob(img_path + "/*"))
                 img = np.empty((slices, 30, 512, 512))

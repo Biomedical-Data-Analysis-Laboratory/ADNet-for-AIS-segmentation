@@ -173,6 +173,7 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
         # Unpack query data.
         query_image = [sample['image'][i].float().cuda() for i in range(sample['image'].shape[0])]  # [C x 3 x H x W]
         query_label = sample['label'].long() if "CTP" not in dataset else sample['label'][:,:,0,...].long()  # C x H x W
+        query_label = query_label if "DWI" not in dataset else query_label[0,...]
         query_id = sample['id'][0].split(prefix)[1][:-len('.nii.gz')] if "CTP" not in dataset else sample['id'][0].split(prefix)[1]
 
         # Compute output.
@@ -195,9 +196,11 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
             if args.CGM and K > 1:  # Cross-Guided Multiple Shot Learning
                 P_hat_q = [0] * K
                 for k, (support_image, support_fg_mask) in enumerate(zip(support_images, support_fg_masks)):
-                    slice_idx = [int(len(support_image)/2)-1,int(len(support_image)/2),int(len(support_image)/2)+1] # [int(len(support_image)/2)]
+
+                    slice_idx = [int(len(support_image)/2)-1,int(len(support_image)/2),int(len(support_image)/2)+1]  # [int(len(support_image)/2)]
                     # slice_idx = [int(len(support_image)/2)-2,int(len(support_image)/2)-1,int(len(support_image)/2),int(len(support_image)/2)+1,int(len(support_image)/2)+2] # [int(len(support_image)/2)]
                     # slice_idx = range(len(support_image))
+
                     if i == 0:
                         confident_score[k] = [confident_score[k]] * len(slice_idx)
                         for I_s_k, I_s_k_mask in zip(support_images, support_fg_masks):
@@ -209,7 +212,7 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
                             masks_stack = torch.stack([torch.stack([mask[0][0]], dim=0) for mask in I_s_k_mask],
                                                       dim=0).view(n_queries, img_size[0], img_size[1])
                             for idx, s in enumerate(slice_idx):
-                                # torch.cuda.empty_cache()
+                                # cur_qry_img = [qry_img] if "CTP" in dataset else [qry_img[[s]]]
                                 G_i_s, _, _ = model([[support_image[s]]], [[support_fg_mask[s]]], [qry_img], train=False)
                                 m_hat = G_i_s.argmax(dim=1).cpu()
                                 m_hat = m_hat.type(torch.uint8)
@@ -217,7 +220,7 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
                         for idx in range(len(confident_score[k])): confident_score[k][idx] /= len(support_images)
                         # confident_score[k] /= float(len(slice_idx))
                     for idx, s in enumerate(slice_idx):
-                        # torch.cuda.empty_cache()
+                        # cur_query_image = query_image if "CTP" in dataset else [query_image[0][[s]]]
                         query_pred_tmp, _, _ = model([[support_image[s]]], [[support_fg_mask[s]]], query_image, train=False)
                         # query_pred_tmp = query_pred_tmp.argmax(dim=1).cpu()
                         # query_pred_tmp = query_pred_tmp.type(torch.uint8)

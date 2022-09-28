@@ -113,9 +113,9 @@ class FewShotSeg(nn.Module):
 
         fts = F.interpolate(fts, size=mask.shape[-2:], mode='bilinear', align_corners=True)
 
-        mask = mask if "CTP" not in self.dataset else mask[0,0,...]  # if we are dealing with CTP just take the first mask!
+        mask = mask if "CTP" not in self.dataset and "DWI" not in self.dataset else mask[0,0,...]  # if we are dealing with CTP just take the first mask!
         # masked fg features
-        if "CTP" in self.dataset: masked_fts = torch.sum(fts * mask[None,None,...], dim=(2, 3)) / (mask[None,None,...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
+        if "CTP" in self.dataset or "DWI" in self.dataset: masked_fts = torch.sum(fts * mask[None,None,...], dim=(2, 3)) / (mask[None,None,...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
         else: masked_fts = torch.sum(fts * mask[None, ...], dim=(2, 3)) / (mask[None, ...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
         return masked_fts
 
