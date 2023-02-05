@@ -5,6 +5,7 @@ import os.path
 import random
 import numpy as np
 import cv2
+import statistics
 
 import torch.nn as nn
 import torch.nn.parallel
@@ -14,6 +15,8 @@ import torch.utils.data
 import torch.utils.data.distributed
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
+import matplotlib
+matplotlib.use('pdf')
 import matplotlib.pyplot as plt
 
 from models.fewshot_anom import FewShotSeg
@@ -37,6 +40,7 @@ def parse_arguments():
     parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--k', default=0.5, type=float)
     parser.add_argument('--original_ds', default=True, action="store_true")
+    parser.add_argument('--test', default=False, action="store_true")
     parser.add_argument('--CGM', default=False, type=bool)  # Cross-Guided Multiple Shot Learning
 
     return parser.parse_args()
@@ -96,62 +100,112 @@ def main():
         logger.info('  *--------------------------------------------------*')
 
         # Get support sample + mask for current class.
-        support_sample = test_dataset.getSupport(label=label_val, all_slices=args.all_slices, N=args.n_shot)
-        test_dataset.label = label_val
+        scores, scores_tmp, count = None, {}, 1
+        for idx_supp in range(94):
+            support_sample, gt_roi, img_path = test_dataset.getSupport(label=label_val, all_slices=args.all_slices, N=args.n_shot)
+            perc = (gt_roi / (512 * 512)) * 100
+            print(perc)
+            if "study_CTP_01_047" in img_path or "study_CTP_00_009" in img_path: continue
+            if ((gt_roi / (512 * 512)) * 100) < 4: continue
+            logger.info("Percentage ROI pixel: {}".format(perc))
+            logger.info("Patient support: {0} - {1}".format(img_path, count))
+            count += 1
+            test_dataset.label = label_val
+            # Infer.
+            with torch.no_grad():
+                scores, scores_tmp = infer(model, query_loader, support_sample, args, logger, label_name, args.dataset, scores_tmp, idx_supp)
 
-        # Infer.
-        with torch.no_grad():
-            scores = infer(model, query_loader, support_sample, args, logger, label_name, args.dataset)
+        dice_tmp, mcc_tmp, deltaV_tmp = {"ALL":[],"BOTH":[],"LVO":[],"SVO":[]},{"ALL":[],"BOTH":[],"LVO":[],"SVO":[]},{"ALL":[],"BOTH":[],"LVO":[],"SVO":[],"WIS":[]}
+        dice_tmp_micro, mcc_tmp_micro = {"ALL":[],"BOTH":[],"LVO":[],"SVO":[]},{"ALL":[],"BOTH":[],"LVO":[],"SVO":[]}
 
-        # Log class-wise results
-        class_dice[label_name] = round(torch.tensor(scores.patient_dice).mean().item(),4)
-        class_iou[label_name] = round(torch.tensor(scores.patient_iou).mean().item(),4)
-        class_mcc[label_name] = round(torch.tensor(scores.patient_mcc).mean().item(),4)
+        for k in scores_tmp.keys():
+            for cl in ["ALL","BOTH","LVO","SVO","WIS"]:
+                whattouse = cl if cl!="ALL" else ""
+                whattouse_2 = cl if cl!="ALL" else "both"
+                if cl!="WIS":
+                    dice_tmp[cl].append(round(scores_tmp[k].compute_dice(whattouse).item(),2))
+                    mcc_tmp[cl].append(round(scores_tmp[k].compute_MCC(whattouse).item(),2))
+                    dice_tmp_micro[cl].append(round(torch.tensor(scores_tmp[k].patient_dice_class[whattouse_2]).mean().item(),2))
+                    mcc_tmp_micro[cl].append(round(torch.tensor(scores_tmp[k].patient_mcc_class[whattouse_2]).mean().item(),2))
+                if cl=="ALL": deltaV_tmp[cl].append(round(torch.tensor(scores_tmp[k].patient_deltaV).mean().item(),2))
+                elif cl!="BOTH": deltaV_tmp[cl].append(round(torch.tensor(scores_tmp[k].patient_deltaV_class[cl]).mean().item(),2))
 
-        logger.info('  *-----------------Final results--------------------*')
-        logger.info('  *--------------------------------------------------*')
-        logger.info('      Mean class IoU: {}'.format(class_iou[label_name]))
-        logger.info('      Mean class Dice: {}'.format(class_dice[label_name]))
-        logger.info('      Mean class MCC: {}'.format(class_mcc[label_name]))
-        logger.info('  *--------------------------------------------------*')
+        for cl in ["ALL", "BOTH",  "LVO", "SVO", "WIS"]:
+            logger.info('  *-----------------Mean/STD results--------------------*')
+            logger.info('  *-----------------------------------------------------*')
+            logger.info('      CLASS {}'.format(cl))
+            if cl!="WIS":
+                logger.info('      Agg. MEAN Dice: {0} +- {1}'.format(round(statistics.mean(dice_tmp[cl]),2), round(statistics.stdev(dice_tmp[cl]),2)))
+                logger.info('      Single MEAN Dice: {0} +- {1}'.format(round(statistics.mean(dice_tmp_micro[cl]),2), round(statistics.stdev(dice_tmp_micro[cl]),2)))
+                logger.info('      Agg. MEAN MCC: {0} +- {1}'.format(round(statistics.mean(mcc_tmp[cl]),2), round(statistics.stdev(mcc_tmp[cl]),2)))
+                logger.info('      Single MEAN MCC: {}'.format(round(statistics.mean(mcc_tmp_micro[cl]),2), round(statistics.stdev(mcc_tmp_micro[cl]),2)))
+            if cl!="BOTH":
+                logger.info('      Mean DeltaV: {0} +- {1}'.format(round(statistics.mean(deltaV_tmp[cl]),2), round(statistics.stdev(deltaV_tmp[cl]),2)))
+                logger.info('  *-----------------------------------------------------*')
 
-        for k in scores.patient_dice_class.keys():
-            dice = round(torch.tensor(scores.patient_dice_class[k]).mean().item(),4)
-            iou = round(torch.tensor(scores.patient_iou_class[k]).mean().item(),4)
-            mcc = round(torch.tensor(scores.patient_mcc_class[k]).mean().item(),4)
+        # # Log class-wise results
+        # class_dice[label_name] = round(torch.tensor(scores.patient_dice).mean().item(),4)
+        # class_iou[label_name] = round(torch.tensor(scores.patient_iou).mean().item(),4)
+        # class_mcc[label_name] = round(torch.tensor(scores.patient_mcc).mean().item(),4)
+        #
+        # logger.info('  *-----------------Final results--------------------*')
+        # logger.info('  *--------------------------------------------------*')
+        # logger.info('      Mean class IoU: {}'.format(class_iou[label_name]))
+        # logger.info('      Mean class Dice: {}'.format(class_dice[label_name]))
+        # logger.info('      Mean class MCC: {}'.format(class_mcc[label_name]))
+        # logger.info('  *--------------------------------------------------*')
+        #
+        # for k in scores.patient_dice_class.keys():
+        #     dice = round(torch.tensor(scores.patient_dice_class[k]).mean().item(),4)
+        #     iou = round(torch.tensor(scores.patient_iou_class[k]).mean().item(),4)
+        #     mcc = round(torch.tensor(scores.patient_mcc_class[k]).mean().item(),4)
+        #
+        #     logger.info('      CLASS {}'.format(k))
+        #     logger.info('      Mean IoU: {}'.format(dice))
+        #     logger.info('      Mean Dice: {}'.format(iou))
+        #     logger.info('      Mean MCC: {}'.format(mcc))
+        #     logger.info('  *--------------------------------------------------*')
 
-            logger.info('      CLASS {}'.format(k))
-            logger.info('      Mean IoU: {}'.format(dice))
-            logger.info('      Mean Dice: {}'.format(iou))
-            logger.info('      Mean MCC: {}'.format(mcc))
-            logger.info('  *--------------------------------------------------*')
+    # # Log final results.
+    # deltaV = round(torch.tensor(scores.patient_deltaV).mean().item(),4)
+    # deltaV_lvo = round(torch.tensor(scores.patient_deltaV_class["LVO"]).mean().item(),4)
+    # deltaV_svo = round(torch.tensor(scores.patient_deltaV_class["SVO"]).mean().item(),4)
+    # deltaV_wis = round(torch.tensor(scores.patient_deltaV_class["WIS"]).mean().item(),4)
+    # logger.info('  *---------------Aggregate results------------------*')
+    # logger.info('  *--------------------------------------------------*')
+    # logger.info('  Aggregate IoU: {}'.format(scores.compute_iou()))
+    # logger.info('  Aggregate Dice: {}'.format(scores.compute_dice()))
+    # logger.info('  Aggregate MCC: {}'.format(scores.compute_MCC()))
+    # logger.info('  DeltaV: {}'.format(deltaV))
+    # logger.info('  *--------------------------------------------------*')
+    # logger.info('  *----------------------LVO----------------------*')
+    # logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("LVO")))
+    # logger.info('  Aggregate Dice: {}'.format(scores.compute_dice("LVO")))
+    # logger.info('  Aggregate MCC: {}'.format(scores.compute_MCC("LVO")))
+    # logger.info('  DeltaV: {}'.format(deltaV_lvo))
+    # logger.info('  *--------------------------------------------------*')
+    # logger.info('  *----------------------SVO----------------------*')
+    # logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("SVO")))
+    # logger.info('  Aggregate Dice : {}'.format(scores.compute_dice("SVO")))
+    # logger.info('  Aggregate MCC : {}'.format(scores.compute_MCC("SVO")))
+    # logger.info('  DeltaV: {}'.format(deltaV_svo))
+    # logger.info('  *--------------------------------------------------*')
+    # logger.info('  *----------------------WIS----------------------*')
+    # logger.info('  DeltaV: {}'.format(deltaV_wis))
+    # logger.info('  *--------------------------------------------------*')
+    #
+    # for flag in ["LVO","SVO","ALL"]:
+    #     plt.scatter(scores.get_coords(flag, 0), scores.get_coords(flag, 1))
+    #     plt.xlabel("N. pixels")
+    #     plt.ylabel("Dice")
+    #     plt.title(flag)
+    #     plt.ylim(0, 1)
+    #     flagtest = "_TEST" if args.test else ""
+    #     plt.savefig(os.path.join(args.save_root,"scatter_{0}{1}.png".format(flag,flagtest)))
+    #     plt.cla()
 
-    # Log final results.
-    logger.info('  *---------------Aggregate results------------------*')
-    logger.info('  *--------------------------------------------------*')
-    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou()))
-    logger.info('  Aggregate Dice: {}'.format(scores.compute_dice()))
-    logger.info('  *--------------------------------------------------*')
-    logger.info('  *----------------------LVO----------------------*')
-    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("LVO")))
-    logger.info('  Aggregate Dice: {}'.format(scores.compute_dice("LVO")))
-    logger.info('  *--------------------------------------------------*')
-    logger.info('  *----------------------SVO----------------------*')
-    logger.info('  Aggregate IoU: {}'.format(scores.compute_iou("SVO")))
-    logger.info('  Aggregate Dice : {}'.format(scores.compute_dice("SVO")))
-    logger.info('  *--------------------------------------------------*')
 
-    for flag in ["LVO","SVO","ALL"]:
-        plt.scatter(scores.get_coords(flag, 0), scores.get_coords(flag, 1))
-        plt.xlabel("N. pixels")
-        plt.ylabel("Dice")
-        plt.title(flag)
-        plt.ylim(0, 1)
-        plt.savefig(os.path.join(args.save_root,"scatter_{}.png".format(flag)))
-        plt.cla()
-
-
-def infer(model, query_loader, support_samples, args, logger, label_name, dataset):
+def infer(model, query_loader, support_samples, args, logger, label_name, dataset, scores_tmp, idx_supp):
     # Test mode.
     model.eval()
 
@@ -165,16 +219,17 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
 
     K = len(support_images)
     # Loop through query volumes.
-    flag_ctp = False if "CTP" not in dataset and "DWI" not in dataset else True
+    flag_ctp = False if "CTP" not in dataset and "DWI" not in dataset and "PMs" not in dataset else True
     scores = Scores(flag_ctp)
+
     for i, sample in enumerate(query_loader):
         torch.cuda.empty_cache()
-        prefix = 'image_' if "CTP" not in dataset and "DWI" not in dataset else 'study_'
+        prefix = 'image_' if "CTP" not in dataset and "DWI" not in dataset and "PMs" not in dataset else 'study_'
         # Unpack query data.
         query_image = [sample['image'][i].float().cuda() for i in range(sample['image'].shape[0])]  # [C x 3 x H x W]
-        query_label = sample['label'].long() if "CTP" not in dataset else sample['label'][:,:,0,...].long()  # C x H x W
+        query_label = sample['label'].long() if "CTP" not in dataset and "PMs" not in dataset else sample['label'][:,:,0,...].long()  # C x H x W
         query_label = query_label if "DWI" not in dataset else query_label[0,...]
-        query_id = sample['id'][0].split(prefix)[1][:-len('.nii.gz')] if "CTP" not in dataset else sample['id'][0].split(prefix)[1]
+        query_id = sample['id'][0].split(prefix)[1][:-len('.nii.gz')] if "CTP" not in dataset and "PMs" not in dataset else sample['id'][0].split(prefix)[1]
 
         # Compute output.
         if args.EP1 is True:  # TODO: add multiple support images
@@ -238,10 +293,21 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
                 query_pred = query_pred.type(torch.uint8)
             else:
                 for support_image, support_fg_mask in zip(support_images, support_fg_masks):
+                    if idx_supp not in scores_tmp.keys(): scores_tmp[idx_supp] = Scores(flag_ctp)
                     query_pred_tmp, _, _ = model([[support_image[int(len(support_image)/2)]]], [[support_fg_mask[int(len(support_image)/2)]]], query_image, train=False)  # C x 2 x H x W
                     query_pred_tmp = query_pred_tmp.argmax(dim=1).cpu()  # C x H x W
                     query_pred_tmp = query_pred_tmp.type(torch.uint8)
                     query_pred += query_pred_tmp
+
+                    # Do for mean and std values
+                    query_pred_tmp[query_pred_tmp >= 0.5] = 1
+                    query_pred_tmp[query_pred_tmp < 0.5] = 0
+                    # Record scores.
+                    scores_tmp[idx_supp].record(query_pred_tmp, query_label[0,...], query_id=query_id)
+                    # logger.info('    Tested query volume: ' + sample['id'][0][len(args.data_root):]
+                    #             + '. Dice score:  ' + str(round(scores_tmp[idx_supp].patient_dice[-1].item(), 3))
+                    #             + '. MCC score:  ' + str(round(scores_tmp[idx_supp].patient_mcc[-1].item(), 3)))
+
                 query_pred = query_pred / float(len(support_images))
                 query_pred[query_pred >= 0.5] = 1
                 query_pred[query_pred < 0.5] = 0
@@ -255,14 +321,14 @@ def infer(model, query_loader, support_samples, args, logger, label_name, datase
                     + '. MCC score:  ' + str(round(scores.patient_mcc[-1].item(), 3))
                     + '. ROI pixels:  ' + str(round(scores.patient_roi[-1].item(), 3)))
 
-        # Save predictions.
-        file_name = 'image_' + query_id + '_' + label_name + '.pt'
-        torch.save(query_pred, os.path.join(args.save, file_name))
+        ## Save predictions.
+        # file_name = 'image_' + query_id + '_' + label_name + '.pt'
+        # torch.save(query_pred, os.path.join(args.save, file_name))
+        #
+        # save_vol(args,query_pred,query_id,label_name)
+        # save_vol(args, query_label[0,...], query_id, label_name+"_label")
 
-        save_vol(args,query_pred,query_id,label_name)
-        save_vol(args, query_label[0,...], query_id, label_name+"_label")
-
-    return scores
+    return scores,scores_tmp
 
 
 def save_vol(args,query_pred,query_id,label_name):
