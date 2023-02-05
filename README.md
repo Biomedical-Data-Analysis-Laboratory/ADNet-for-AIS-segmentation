@@ -1,20 +1,18 @@
 # ADNet
-Code for the paper ["Anomaly Detection-Inspired Few-Shot Medical Image Segmentation Through Self-Supervision With Supervoxels"](https://www.sciencedirect.com/science/article/pii/S1361841522000378), published in Medical Image Analysis.
+Code for the paper ["Self-Supervised Few-Shot Learning for Ischemic Stroke Lesion Segmentation"](), accepted for the ISBI 2023 conference.
 
 <img src="./overview.png" width="800">
 
 #### Abstract
-Recent work has shown that label-efficient few-shot learning through self-supervision can achieve promising medical image segmentation results. However, few-shot segmentation models typically rely on prototype representations of the semantic classes, resulting in a loss of local information that can degrade performance. This is particularly problematic for the typically large and highly heterogeneous background class in medical image segmentation problems. Previous works have attempted to address this issue by learning additional prototypes for each class, but since the prototypes are based on a limited number of slices, we argue that this ad-hoc solution is insufficient to capture the background properties. Motivated by this, and the observation that the foreground class (e.g., one organ) is relatively homogeneous, we propose a novel anomaly detection-inspired approach to few-shot medical image segmentation in which we refrain from modeling the background explicitly. Instead, we rely solely on a single foreground prototype to compute anomaly scores for all query pixels. The segmentation is then performed by thresholding these anomaly scores using a learned threshold. Assisted by a novel self-supervision task that exploits the 3D structure of medical images through supervoxels, our proposed anomaly detection-inspired few-shot medical image segmentation model outperforms previous state-of-the-art approaches on two representative MRI datasets for the tasks of abdominal organ segmentation and cardiac segmentation.
+Precise ischemic lesion segmentation plays an essential role in improving diagnosis and treatment planning for ischemic stroke, one of the prevalent diseases with the highest mortality rate.
+While numerous deep neural network approaches have recently been proposed to tackle this problem, these methods require large amounts of annotated regions during training, which can be impractical in the medical domain where annotated data is scarce.
+As a remedy, we present a prototypical few-shot segmentation approach for ischemic lesion segmentation using only one annotated sample during training.
+The proposed approach leverages a novel self-supervised training mechanism that is tailored to the task of ischemic stroke lesion segmentation by exploiting color-coded parametric maps generated from Computed Tomography Perfusion scans. 
+We illustrate the benefits of our proposed training mechanism, leading to considerable improvements in performance in the few-shot setting.
+Given a single annotated patient, an average Dice score of 0.58 is achieved for the segmentation of ischemic lesions.
 
 ```
-@article{hansen2022anomaly,
-  title={Anomaly Detection-Inspired Few-Shot Medical Image Segmentation Through Self-Supervision With Supervoxels},
-  author={Hansen, Stine and Gautam, Srishti and Jenssen, Robert and Kampffmeyer, Michael},
-  journal={Medical Image Analysis},
-  pages={102385},
-  year={2022},
-  publisher={Elsevier}
-}
+@article{TBA}
 ```
 
 # Getting started
