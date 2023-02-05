@@ -1,7 +1,7 @@
 # ADNet
 Code for the paper ["Self-Supervised Few-Shot Learning for Ischemic Stroke Lesion Segmentation"](), accepted for the ISBI 2023 conference.
 
-<img src="./overview.png" width="800">
+<img src="./overview_1.png" width="1000">
 
 #### Abstract
 Precise ischemic lesion segmentation plays an essential role in improving diagnosis and treatment planning for ischemic stroke, one of the prevalent diseases with the highest mortality rate.
