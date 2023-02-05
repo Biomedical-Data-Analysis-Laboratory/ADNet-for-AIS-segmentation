@@ -16,12 +16,14 @@ class TVDeeplabRes101Encoder(nn.Module):
                                                                      num_classes=21, aux_loss=None)
         if use_coco_init: print("###### NETWORK: Using ms-coco initialization ######")
 
-        if "CTP" in self.dataset:
+        if "CTP" in self.dataset or "DWI" in self.dataset or "PMs" in self.dataset:
             for param in _model.parameters(): param.requires_grad = False
 
         _model_list = list(_model.children())
 
-        self.layers_pre = nn.Conv2d(30,3,kernel_size=1, stride=1, bias=True)
+        dim_size = 30
+        if "PMs" in self.dataset: dim_size = 5
+        self.layers_pre = nn.Conv2d(dim_size,3,kernel_size=1, stride=1, bias=True)
         self.aux_dim_keep = aux_dim_keep
         self.backbone = _model_list[0]
         self.localconv = nn.Conv2d(2048, 256, kernel_size=1, stride=1, bias=False)  # reduce feature map dimension
@@ -40,7 +42,7 @@ class TVDeeplabRes101Encoder(nn.Module):
         Args:
             low_level: whether returning aggregated low-level features in FCN
         """
-        if "CTP" in self.dataset: x_in = self.layers_pre(x_in)
+        if "CTP" in self.dataset or "PMs" in self.dataset: x_in = self.layers_pre(x_in)
 
         fts = self.backbone(x_in)
         if self.use_aspp:

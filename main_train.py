@@ -153,7 +153,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
     t_loss = AverageMeter('Threshold loss', ':.4f')
 
     # Unfreeze encoder layers
-    if epoch == 10 and "CTP" in args.dataset:
+    if epoch == 10 and ("CTP" in args.dataset or "PMs" in args.dataset):
         for param in model.parameters(): param.requires_grad = True
     # Train mode.
     model.train()
@@ -168,7 +168,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
 
         query_images = [query_image.float().cuda() for query_image in sample['query_images']]
         query_labels = torch.cat([query_label.long().cuda() for query_label in sample['query_labels']], dim=0)
-        if "CTP" in args.dataset: query_labels = query_labels[:,0,...]
+        if "CTP" in args.dataset or "PMs" in args.dataset: query_labels = query_labels[:,0,...]
 
         sprvxl_toexp = sample['sprvxl_toexp'][0,...]
 
@@ -229,7 +229,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, args, epoch):
                                "mask_data": np.array((query_labels / query_labels.max()).squeeze().cpu().detach().numpy(), dtype=np.uint8)
                            }
                        })})
-            if args.dataset=="CTP":
+            if "CTP" in args.dataset or "PMs" in args.dataset:
                 feats = model.encoder.features["layers_pre"].cpu().detach().numpy()
                 wandb.log({
                     "first_conv_layer_1": wandb.Image(feats[0, ...].transpose(1, 2, 0)),

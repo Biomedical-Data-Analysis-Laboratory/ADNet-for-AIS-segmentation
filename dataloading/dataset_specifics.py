@@ -15,7 +15,7 @@ def get_label_names(dataset):
         label_names[2] = 'RK'
         label_names[3] = 'LK'
         label_names[4] = 'SPLEEN'
-    elif "CTP" in dataset:
+    elif "CTP" in dataset or "PMs" in dataset:
         label_names[0] = "BG"
         label_names[1] = "hypoperfused"
         # label_names[1] = "penumbra"
@@ -44,7 +44,7 @@ def get_folds(dataset, original_ds):
         FOLD[4] = set(range(16, 20))
         FOLD[4].update([0])
         return FOLD
-    elif dataset == "CTP":
+    elif dataset == "CTP" or dataset == "PMs":
         if original_ds: FOLD[0] = set(range(0,152))  # train
         else: FOLD[0] = set(range(0,304))  # train
         # FOLD[0] = set(range(0, 62))
@@ -54,11 +54,11 @@ def get_folds(dataset, original_ds):
         # FOLD[4] = set(range(244, 304))
         # FOLD[4].update([0])
         return FOLD
-    elif dataset == "CTP_LVO":
+    elif dataset == "CTP_LVO" or dataset == "PMs_LVO":
         if original_ds: FOLD[0] = set(range(0, 77))  # train
         else: FOLD[0] = set(range(0, 77)).union(range(152,229))  # train
         return FOLD
-    elif dataset == "CTP_Non-LVO":
+    elif dataset == "CTP_Non-LVO" or dataset == "PMs_Non-LVO":
         if original_ds: FOLD[0] = set(range(77,137))  # train
         else: FOLD[0] = set(range(77,137)).union(range(229,289))  # train
         return FOLD

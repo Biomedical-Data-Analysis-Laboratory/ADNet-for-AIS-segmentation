@@ -17,12 +17,15 @@ class TestDataset(Dataset):
         self.dataset = args.dataset
         self.data_root = "/home/prosjekt/PerfusionCT/StrokeSUS/ADNet/"
         self.nii_studies = "nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
-        if args.original_ds: self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+        self.nii_studies = "PMs_niis/" if "PMs" in self.dataset else self.nii_studies
+        if args.original_ds:
+            self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+            self.nii_studies = "PMs_orig_niis/" if "PMs" in self.dataset else self.nii_studies
 
         # reading the paths
         if args.dataset == 'CMR': self.image_dirs = glob.glob(os.path.join(self.data_root, 'cmr_MR_normalized/image*'))
         elif args.dataset == 'CHAOST2': self.image_dirs = glob.glob(os.path.join(self.data_root, 'chaos_MR_T2_normalized/image*'))
-        elif 'CTP' in args.dataset or 'DWI' in args.dataset:
+        elif 'CTP' in args.dataset or 'DWI' in args.dataset or "PMs" in self.dataset:
             if "_LVO" in args.dataset:
                 self.image_dirs = glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_00*'))+glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_01*'))
                 if not args.original_ds: self.image_dirs += (glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_20*'))+glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_21*')))
@@ -49,7 +52,7 @@ class TestDataset(Dataset):
                                  '02_040', '02_022', '22_024', '02_026', '02_010', '22_004', '03_005', '03_002',
                                  '23_004', '03_004', '23_005', '23_013']
 
-        if 'CTP' not in args.dataset and "DWI" not in args.dataset:
+        if 'CTP' not in args.dataset and "DWI" not in args.dataset and "PMs" not in self.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
             # remove test fold!
             self.FOLD = get_folds(args.dataset, args.original_ds)
@@ -60,17 +63,23 @@ class TestDataset(Dataset):
             self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] not in self.val_patients
                                 and fold.split("study_CTP_")[-1][:6] not in self.test_patients
                                 and fold.split("study_CTP_")[-1][:6] not in self.exclude_patients]
-            self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] in self.val_patients]
+            # if args.n_shot > 7:
+            #     self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] not in self.val_patients
+            #                         and fold.split("study_CTP_")[-1][:6] not in self.test_patients
+            #                         and fold.split("study_CTP_")[-1][:6] not in self.exclude_patients]
+            # else: self.support_dir = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] in ["01_052","01_030","02_053","02_045","01_055","02_016","02_056"]]
+            if args.test: self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] in self.test_patients]
+            else: self.image_dirs = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1][:6] in self.val_patients]
 
-        if 'CTP' in args.dataset or "DWI" in args.dataset:
-            self.image_test = [fold for fold in self.image_dirs if fold.split("study_CTP_")[-1] in self.test_patients]
             # split into support/query
             if "_Non-LVO" in args.dataset:
                 if args.n_shot==1: self.support_dir = [self.support_dir[2]]
                 else: self.support_dir = [self.support_dir[2],self.support_dir[3],self.support_dir[5],self.support_dir[6],self.support_dir[8]]
-            else: self.support_dir = self.support_dir[:args.n_shot]  # [self.image_dirs[0]]
-            # append the test patients
-            for test_p in self.image_test: self.image_dirs.append(test_p)
+            else:
+                # print(self.support_dir)
+                if args.n_shot==1: self.support_dir = [f for f in self.support_dir if "study_CTP_01_" in f]  # [self.support_dir[-2]]
+                elif args.n_shot==5: self.support_dir = [self.support_dir[0],self.support_dir[1],self.support_dir[4],self.support_dir[5],self.support_dir[6]]
+                else: self.support_dir = self.support_dir[:args.n_shot]  # [self.image_dirs[0]]
         self.label = None
 
         # evaluation protocol
@@ -82,7 +91,7 @@ class TestDataset(Dataset):
     def __getitem__(self, idx):
 
         img_path = self.image_dirs[idx]
-        if "CTP" not in self.dataset:
+        if "CTP" not in self.dataset and "PMs" not in self.dataset:
             prefix = "image_" if "DWI" not in self.dataset else "study_"
             img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
             img = (img - img.mean()) / (img.std() + 1e-5)
@@ -98,7 +107,8 @@ class TestDataset(Dataset):
             if "DWI" in self.dataset: lbl = lbl.reshape((1,lbl.shape[0],lbl.shape[1],lbl.shape[2]))
         else:
             slices = len(glob.glob(img_path + "/*"))
-            img = np.empty((slices, 30, 512, 512))
+            dim_size = 30 if "CTP" in self.dataset else 5
+            img = np.empty((slices, dim_size, 512, 512))
             for slice_idx in range(slices):
                 image_path = os.path.join(img_path, str(slice_idx) + ".nii.gz")
                 img[slice_idx,...] = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
@@ -113,7 +123,7 @@ class TestDataset(Dataset):
             # lbl_tmp[lbl_tmp > 170 + div_val] = 2  # core
             lbl_tmp = 1 * (lbl_tmp == self.label)
 
-            lbl = np.stack(30 * [lbl_tmp], axis=1)  # stack the ground truth images together
+            lbl = np.stack(dim_size * [lbl_tmp], axis=1)  # stack the ground truth images together
 
         sample = {'id': img_path}
 
@@ -146,12 +156,13 @@ class TestDataset(Dataset):
         if label is None: raise ValueError('Need to specify label class!')
 
         arr_samples = []
+        gt_roi = 0
         if N is None: raise ValueError("Need to specify the number of shots")
 
         for img_path in self.support_dir[:N]:  # take the first N images for support
-
+            print(img_path)
             # img_path = self.support_dir
-            if "CTP" not in self.dataset:
+            if "CTP" not in self.dataset and "PMs" not in self.dataset:
                 prefix = "image_" if "DWI" not in self.dataset else "study_"
                 img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
                 img = (img - img.mean()) / (img.std() + 1e-5)
@@ -167,7 +178,8 @@ class TestDataset(Dataset):
                 if "DWI" in self.dataset: lbl = lbl.reshape((lbl.shape[0],1,lbl.shape[1],lbl.shape[2]))
             else:
                 slices = len(glob.glob(img_path + "/*"))
-                img = np.empty((slices, 30, 512, 512))
+                dim_size = 30 if "CTP" in self.dataset else 5
+                img = np.empty((slices, dim_size, 512, 512))
                 for slice_idx in range(slices):
                     image_path = os.path.join(img_path, str(slice_idx) + ".nii.gz")
                     img[slice_idx,...] = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
@@ -181,7 +193,9 @@ class TestDataset(Dataset):
                 # lbl_tmp[np.logical_and(lbl_tmp > 85+div_val, lbl_tmp <= 170+div_val)] = 1 # penumbra
                 # lbl_tmp[lbl_tmp > 170+div_val] = 2  # core
                 lbl_tmp = 1 * (lbl_tmp == label)
-                lbl = np.stack(30 * [lbl_tmp], axis=1)  # stack the ground truth images together
+                gt_roi = np.sum((lbl_tmp[int(lbl_tmp.shape[0]/2),:]==1), dtype=np.float32)  # np.sum((lbl_tmp == 1), dtype=np.float32)
+
+                lbl = np.stack(dim_size * [lbl_tmp], axis=1)  # stack the ground truth images together
 
             sample = {}
             if all_slices:
@@ -196,7 +210,9 @@ class TestDataset(Dataset):
                 sample['label'] = torch.from_numpy(lbl[idx][idx_])
             arr_samples.append(sample)
 
-        return arr_samples
+            self.support_dir.remove(img_path)
+
+        return arr_samples, gt_roi, img_path
 
 
 class TrainDataset(Dataset):
@@ -208,22 +224,26 @@ class TrainDataset(Dataset):
         self.n_sv = args.n_sv
         self.max_iter = args.max_iterations
         self.dataset = args.dataset
-        self.read = True if "CTP" not in self.dataset and "DWI" not in self.dataset else False  # read images before get_item
+        self.read = True if "CTP" not in self.dataset and "DWI" not in self.dataset and "PMs" not in self.dataset else False  # read images before get_item
         self.train_sampling = 'neighbors'
         self.min_size = args.min_size
         self.seed = args.seed
         self.use_labels_intrain = args.use_labels_intrain
         self.data_root = "/home/prosjekt/PerfusionCT/StrokeSUS/ADNet/"
-        self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+        self.nii_studies = "nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+        self.nii_studies = "PMs_niis/" if "PMs" in self.dataset else self.nii_studies
+        if args.original_ds:
+            self.nii_studies = "orig_nii_studies/" if "DWI" not in self.dataset else "DWI_nii_studies/"
+            self.nii_studies = "PMs_orig_niis/" if "PMs" in self.dataset else self.nii_studies
         self.spv_fold = "supervoxels_ALL"
-        self.spv_type = "3D-FELZENSZWALB_raw"  # "3D-FELZENSZWALB_PMs_stacked_RGB_v3.0"
+        self.spv_type = "3D-FELZENSZWALB_PMs_stacked_RGB_v3.0"  # "3D-FELZENSZWALB_raw"
         self.spv_mask = "all_MASK"
         self.spv_prefix = 'superpix-3D_felzenszwalb_'
 
         # reading the paths (leaving the reading of images into memory to __getitem__)
         if args.dataset == 'CMR': self.image_dirs = glob.glob(os.path.join(self.data_root, 'cmr_MR_normalized/image*'))
         elif args.dataset == 'CHAOST2': self.image_dirs = glob.glob(os.path.join(self.data_root, 'chaos_MR_T2_normalized/image*'))
-        elif 'CTP' in args.dataset or 'DWI' in args.dataset:
+        elif 'CTP' in args.dataset or 'DWI' in args.dataset or "PMs" in args.dataset:
             if "_LVO" in args.dataset:
                 self.image_dirs = glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_00*'))+glob.glob(os.path.join(self.data_root, self.nii_studies + 'study_CTP_01*'))
                 self.sprvxl_dirs = glob.glob(os.path.join(self.data_root, self.nii_studies + 'label_CTP_00*'))+glob.glob(os.path.join(self.data_root, self.nii_studies + 'label_CTP_01*'))
@@ -261,7 +281,7 @@ class TrainDataset(Dataset):
 
         self.FOLD = get_folds(args.dataset, args.original_ds)
 
-        if 'CTP' not in args.dataset and "DWI" not in args.dataset:
+        if 'CTP' not in args.dataset and "DWI" not in args.dataset and "PMs" not in args.dataset:
             self.image_dirs = sorted(self.image_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
             self.sprvxl_dirs = glob.glob(os.path.join(self.data_root, 'supervoxels_' + str(args.n_sv), 'super*'))
             self.sprvxl_dirs = sorted(self.sprvxl_dirs, key=lambda x: int(x.split('_')[-1].split('.nii.gz')[0]))
@@ -276,7 +296,7 @@ class TrainDataset(Dataset):
                 idpatients = [fold.split("/study_")[-1].split(".nii.gz")[0] for fold in self.image_dirs]
                 self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1] in idpatients]
 
-        if "CTP" in args.dataset or "DWI" in args.dataset:
+        if "CTP" in args.dataset or "DWI" in args.dataset or "PMs" in args.dataset:
             self.sprvxl_dirs = [fold for fold in self.sprvxl_dirs if fold.split("/")[-1][4:] not in self.test_patients and fold.split("/")[-1][4:] not in self.exclude_patients]
             self.image_dirs.sort()
             self.sprvxl_dirs.sort()
@@ -324,22 +344,23 @@ class TrainDataset(Dataset):
         transform = deftfx.Compose(tfx)
 
         n_chann = 3 if "CTP" not in self.dataset else 30
+        n_chann = 5 if "PMs" in self.dataset else n_chann
         if len(img.shape) > 4:  # support images
             n_shot = img.shape[1]
             for shot in range(n_shot):
-                mask_forcat = mask[0, shot] if "CTP" in self.dataset else mask[:, shot]
+                mask_forcat = mask[0, shot] if "CTP" in self.dataset or "PMs" in self.dataset else mask[:, shot]
                 cat = np.concatenate((img[0, shot], mask_forcat)).transpose(1, 2, 0)
                 cat = transform(cat).transpose(2, 0, 1)
                 img[0, shot] = cat[:n_chann, :, :]
                 mask[:, shot] = np.rint(cat[n_chann:, :, :])
         else:  # query images
             for q in range(img.shape[0]):
-                mask_forcat = mask[q] if "CTP" in self.dataset else mask[q][None]
+                mask_forcat = mask[q] if "CTP" in self.dataset or "PMs" in self.dataset else mask[q][None]
                 cat = np.concatenate((img[q], mask_forcat, sprvxl)).transpose(1, 2, 0)
                 cat = transform(cat).transpose(2, 0, 1)
                 img[q] = cat[:n_chann, :, :]
-                mask[q] = np.rint(cat[n_chann:n_chann*2, :, :].squeeze()) if "CTP" in self.dataset else np.rint(cat[n_chann:n_chann+1, :, :].squeeze())
-                sprvxl = cat[n_chann*2:,:,:] if "CTP" in self.dataset else cat[n_chann+1:,:,:]
+                mask[q] = np.rint(cat[n_chann:n_chann*2, :, :].squeeze()) if "CTP" in self.dataset or "PMs" in self.dataset else np.rint(cat[n_chann:n_chann+1, :, :].squeeze())
+                sprvxl = cat[n_chann*2:,:,:] if "CTP" in self.dataset or "PMs" in self.dataset else cat[n_chann+1:,:,:]
         return img, mask, sprvxl
 
     def __getitem__(self, idx):
@@ -353,7 +374,7 @@ class TrainDataset(Dataset):
             sprvxl = self.sprvxls[self.sprvxl_dirs[pat_idx]]
         else:
             # read image/supervoxel volume into memory
-            if "CTP" not in self.dataset:
+            if "CTP" not in self.dataset and "PMs" not in self.dataset:
                 img = sitk.GetArrayFromImage(sitk.ReadImage(self.image_dirs[pat_idx]))
                 if "DWI" not in self.dataset: sprvxl = sitk.GetArrayFromImage(sitk.ReadImage(self.sprvxl_dirs[pat_idx]))
                 else:
@@ -372,8 +393,7 @@ class TrainDataset(Dataset):
                 image_path = os.path.join(self.image_dirs[pat_idx], str(slice_selected) + ".nii.gz")
                 img = sitk.GetArrayFromImage(sitk.ReadImage(image_path))
 
-                if self.use_labels_intrain:
-                    sprvxl = sitk.GetArrayFromImage(sitk.ReadImage(self.sprvxl_dirs[pat_idx]))
+                if self.use_labels_intrain: sprvxl = sitk.GetArrayFromImage(sitk.ReadImage(self.sprvxl_dirs[pat_idx]))
                 else:
                     sprvxl = np.empty((slices, img.shape[1], img.shape[2]))
 
@@ -406,18 +426,18 @@ class TrainDataset(Dataset):
                 # extract slices containing the sampled class
                 sli_idx = np.sum(sprvxl == cls_idx, axis=(1, 2)) > 0
                 # if the selected slice for the support is NOT included in the extract slices don't update n_slices
-                if "CTP" in self.dataset and not sli_idx[slice_selected]: continue
+                if ("CTP" in self.dataset or "PMs" in self.dataset) and not sli_idx[slice_selected]: continue
                 n_slices = np.sum(sli_idx)
 
-            img_slices = img[sli_idx] if "CTP" not in self.dataset else img
+            img_slices = img[sli_idx] if "CTP" not in self.dataset and "PMs" not in self.dataset else img
             sprvxl_slices = 1 * (sprvxl[sli_idx] == cls_idx)
             # update the slice_selected index subtracting the slices that don't include the selected class before the slice_selected
             slice_selected = slice_selected - (len(sli_idx[:slice_selected]) - sum(sli_idx[:slice_selected]))
             sprvxl_toexp = sprvxl[sli_idx]
 
             # sample support and query slices
-            if "CTP" not in self.dataset:
-                i = random.choice(np.arange(n_slices - ((self.n_shot * self.n_way) + self.n_query) + 1)) # successive slices
+            if "CTP" not in self.dataset and "PMs" not in self.dataset:
+                i = random.choice(np.arange(n_slices - ((self.n_shot * self.n_way) + self.n_query) + 1))  # successive slices
                 sample = np.arange(i, i + (self.n_shot * self.n_way) + self.n_query)
             else: sample = np.array([slice_selected,slice_selected])  # if CTP then take the selected slice
 
@@ -433,7 +453,7 @@ class TrainDataset(Dataset):
         sup_lbl = sprvxl_slices[sample[:self.n_shot * self.n_way]][None,]  # n_way * (n_shot * C) * H * W
         qry_lbl = sprvxl_slices[sample[self.n_shot * self.n_way:]]  # n_qry * C * H * W
         sprvxl_toexp = sprvxl_toexp[sample[self.n_shot * self.n_way:]]
-        if "CTP" not in self.dataset:
+        if "CTP" not in self.dataset and "PMs" not in self.dataset:
             sup_img = img_slices[sample[:self.n_shot * self.n_way]][None,]  # n_way * (n_shot * C) * H * W
             sup_img = np.stack((sup_img, sup_img, sup_img), axis=2)
             qry_img = img_slices[sample[self.n_shot * self.n_way:]]  # n_qry * C * H * W

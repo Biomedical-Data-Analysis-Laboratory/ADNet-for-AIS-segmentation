@@ -113,9 +113,9 @@ class FewShotSeg(nn.Module):
 
         fts = F.interpolate(fts, size=mask.shape[-2:], mode='bilinear', align_corners=True)
 
-        mask = mask if "CTP" not in self.dataset and "DWI" not in self.dataset else mask[0,0,...]  # if we are dealing with CTP just take the first mask!
+        mask = mask if "CTP" not in self.dataset and "DWI" not in self.dataset and "PMs" not in self.dataset else mask[0,0,...]  # if we are dealing with CTP just take the first mask!
         # masked fg features
-        if "CTP" in self.dataset or "DWI" in self.dataset: masked_fts = torch.sum(fts * mask[None,None,...], dim=(2, 3)) / (mask[None,None,...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
+        if "CTP" in self.dataset or "DWI" in self.dataset or "PMs" in self.dataset: masked_fts = torch.sum(fts * mask[None,None,...], dim=(2, 3)) / (mask[None,None,...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
         else: masked_fts = torch.sum(fts * mask[None, ...], dim=(2, 3)) / (mask[None, ...].sum(dim=(2, 3)) + 1e-5)  # 1 x C
         return masked_fts
 
@@ -160,7 +160,7 @@ class FewShotSeg(nn.Module):
                 pred_ups = torch.cat((1.0 - pred_ups, pred_ups), dim=1)
 
                 # Construct the support Ground-Truth segmentation
-                if "CTP" in self.dataset:
+                if "CTP" in self.dataset or "PMs" in self.dataset:
                     supp_label = torch.full_like(fore_mask[way, shot, 0], 255, device=img_fts.device)
                     supp_label[fore_mask[way, shot, 0] == 1] = 1
                     supp_label[fore_mask[way, shot, 0] == 0] = 0
